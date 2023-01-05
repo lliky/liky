@@ -187,3 +187,5 @@ func (q *Type) Done(item interface{}) {
 	}
 }
 ```
+
+### 延迟队列
