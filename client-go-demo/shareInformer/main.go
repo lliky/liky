@@ -2,11 +2,11 @@ package main
 
 import (
 	"fmt"
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/workqueue"
 )
 
 func main() {
@@ -25,21 +25,33 @@ func main() {
 	factory := informers.NewSharedInformerFactoryWithOptions(clientset, 0, informers.WithNamespace("default"))
 	informer := factory.Core().V1().Pods().Informer()
 
+	// add workqueue
+	rateLimitingQueue := workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "controller")
 	// add event handler
 	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			fmt.Println("Added Event")
+			key, err := cache.MetaNamespaceKeyFunc(obj)
+			if err != nil {
+				fmt.Println("can't get key")
+			}
+			rateLimitingQueue.AddRateLimited(key)
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			fmt.Println("Updated Event")
+			key, err := cache.MetaNamespaceKeyFunc(newObj)
+			if err != nil {
+				fmt.Println("can't get key")
+			}
+			rateLimitingQueue.AddRateLimited(key)
 		},
 		DeleteFunc: func(obj interface{}) {
-			m, err := meta.Accessor(obj)
-			if err != nil {
-				fmt.Println("find err", err)
-			}
-			fmt.Println(m.GetNamespace())
 			fmt.Println("Deleted Event")
+			key, err := cache.MetaNamespaceKeyFunc(obj)
+			if err != nil {
+				fmt.Println("can't get key")
+			}
+			rateLimitingQueue.AddRateLimited(key)
 		},
 	})
 	// start informer
