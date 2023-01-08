@@ -464,3 +464,240 @@ func insert(q *waitForPriorityQueue, knownEntries map[t]*waitFor, entry *waitFor
 }
 
 ```
+
+### 限速队列
+原理：利用延迟队列的特性，延迟某个元素的插入时间来达到限速的目的，限速队列是延迟队列的扩展，增加了 **AddRateLimited** 、 **Forget** 、 **NumRequeues** 3个方法。
+#### 接口
+```go
+// RateLimitingInterface is an interface that rate limits items being added to the queue.
+// RateLimitingInterface 是对加入队列的元素进行速率限制的接口
+type RateLimitingInterface interface {
+	// 延时队列
+	DelayingInterface
+
+	// AddRateLimited adds an item to the workqueue after the rate limiter says it's ok
+	// 在限速器说 ok 后，将元素加入到工作队列中
+	AddRateLimited(item interface{})
+
+	// Forget indicates that an item is finished being retried.  Doesn't matter whether it's for perm failing
+	// or for success, we'll stop the rate limiter from tracking it.  This only clears the `rateLimiter`, you
+	// still have to call `Done` on the queue.
+	// 丢弃指定元素
+	Forget(item interface{})
+
+	// NumRequeues returns back how many times the item was requeued
+	// 查询元素放入队列的次数
+	NumRequeues(item interface{}) int
+}
+```
+#### 实现
+```go
+// rateLimitingType wraps an Interface and provides rateLimited re-enquing
+// 限速队列的实现
+type rateLimitingType struct {
+	// 集成了延迟队列
+	DelayingInterface
+	// 限速器
+	rateLimiter RateLimiter
+}
+
+// AddRateLimited AddAfter's the item based on the time when the rate limiter says it's ok
+// 通过限速器获取延迟时间，然后加入到延时队列
+func (q *rateLimitingType) AddRateLimited(item interface{}) {
+	q.DelayingInterface.AddAfter(item, q.rateLimiter.When(item))
+}
+// 直接通过限速器获取元素放入队列的次数
+func (q *rateLimitingType) NumRequeues(item interface{}) int {
+	return q.rateLimiter.NumRequeues(item)
+}
+// 直接通过限速器丢弃指定的元素
+func (q *rateLimitingType) Forget(item interface{}) {
+	q.rateLimiter.Forget(item)
+}
+```
+
+#### 限速器
+接口定义
+```go
+type RateLimiter interface {
+	// When gets an item and gets to decide how long that item should wait
+	// 获取指定的元素需要等待多久
+	When(item interface{}) time.Duration
+	// Forget indicates that an item is finished being retried.  Doesn't matter whether it's for failing
+	// or for success, we'll stop tracking it
+	// 释放指定元素，表示该元素已经处理
+	Forget(item interface{})
+	// NumRequeues returns back how many failures the item has had
+	// 返回某个对象被重新入队多少次，监控用
+	NumRequeues(item interface{}) int
+}
+```
+
+##### BucketRateLimiter
+```go
+// BucketRateLimiter adapts a standard bucket to the workqueue ratelimiter API
+// 令牌桶限速器，固定速率 qps
+type BucketRateLimiter struct {
+	// go 自带的
+	*rate.Limiter
+}
+// 判断是否实现 RateLimiter 接口
+var _ RateLimiter = &BucketRateLimiter{}
+
+func (r *BucketRateLimiter) When(item interface{}) time.Duration {
+	// 获取需要等待的时间（延迟），而且这个延迟是一个相对固定的周期
+	return r.Limiter.Reserve().Delay()
+}
+
+func (r *BucketRateLimiter) NumRequeues(item interface{}) int {
+	// 固定频率，不需要重试
+	return 0
+}
+
+func (r *BucketRateLimiter) Forget(item interface{}) {
+	// 不需要重试，也不需要丢弃
+}
+```
+令牌桶限速器里面直接包装一个令牌桶 Limiter 对象。
+
+#### ItemExponentialFailureRateLimiter
+指数增长限速器，元素错误次数指数递增限速器，根据元素错误次数逐渐累加等待时间
+```go
+// ItemExponentialFailureRateLimiter does a simple baseDelay*2^<num-failures> limit
+// dealing with max failures and expiration are up to the caller
+// 当处理对象失败的时候，其再次入队的等待时间 *2，到 MaxDelay 为止，直到超过最大失败次数
+type ItemExponentialFailureRateLimiter struct {
+	// 修改失败次数用到的锁
+	failuresLock sync.Mutex
+	// 记录每个元素错误次数
+	failures     map[interface{}]int
+	// 元素延迟基数
+	baseDelay time.Duration
+	// 元素最大的延迟时间
+	maxDelay  time.Duration
+}
+
+func (r *ItemExponentialFailureRateLimiter) When(item interface{}) time.Duration {
+	r.failuresLock.Lock()
+	defer r.failuresLock.Unlock()
+	// 累加错误计数
+	exp := r.failures[item]
+	r.failures[item] = r.failures[item] + 1
+
+	// The backoff is capped such that 'calculated' value never overflows.
+	// 通过错误次数计算延迟时间： 2^i * baseDelay
+	backoff := float64(r.baseDelay.Nanoseconds()) * math.Pow(2, float64(exp))
+	if backoff > math.MaxInt64 {
+		// 最大延迟时间
+		return r.maxDelay
+	}
+	// 取计算的延迟值和最大延迟值的最小值
+	calculated := time.Duration(backoff)
+	if calculated > r.maxDelay {
+		return r.maxDelay
+	}
+
+	return calculated
+}
+// 元素错误次数，直接从 failures 中取
+func (r *ItemExponentialFailureRateLimiter) NumRequeues(item interface{}) int {
+	r.failuresLock.Lock()
+	defer r.failuresLock.Unlock()
+
+	return r.failures[item]
+}
+// 直接从 failures 删除指定元素
+func (r *ItemExponentialFailureRateLimiter) Forget(item interface{}) {
+	r.failuresLock.Lock()
+	defer r.failuresLock.Unlock()
+
+	delete(r.failures, item)
+}
+```
+#### ItemFastSlowRateLimiter
+快慢限速器，先用快尝试超过阈值之后，用慢尝试，很少使用该限速器
+```go
+// ItemFastSlowRateLimiter does a quick retry for a certain number of attempts, then a slow retry after that
+// 快慢限速器，先以 fastDelay 为周期进行尝试，超过 maxFastAttempts 次数后，以 slowDelay 为周期进行尝试
+type ItemFastSlowRateLimiter struct {
+	failuresLock sync.Mutex
+	// 错误次数计数
+	failures     map[interface{}]int
+	// 错误尝试阈值
+	maxFastAttempts int
+	// 短延迟时间
+	fastDelay       time.Duration
+	// 长延迟时间
+	slowDelay       time.Duration
+}
+```
+
+#### MaxOfRateLimiter 
+混合限速器，内部有多个限速器，选择所有限速器中**速度最慢**的一种方案，比如内部有三个限速器，When 接口返回延迟最大的那个。
+```go
+// MaxOfRateLimiter calls every RateLimiter and returns the worst case response
+// When used with a token bucket limiter, the burst could be apparently exceeded in cases where particular items
+// were separately delayed a longer time.
+// 选择所有限速器中速度最慢的一种方案
+type MaxOfRateLimiter struct {
+	// 限速器数组
+	limiters []RateLimiter
+}
+
+func (r *MaxOfRateLimiter) When(item interface{}) time.Duration {
+	ret := time.Duration(0)
+	// 获取所有限速器里面时间最大的延迟时间
+	for _, limiter := range r.limiters {
+		curr := limiter.When(item)
+		if curr > ret {
+			ret = curr
+		}
+	}
+
+	return ret
+}
+
+func (r *MaxOfRateLimiter) NumRequeues(item interface{}) int {
+	ret := 0
+	// 次数也是取最大值
+	for _, limiter := range r.limiters {
+		curr := limiter.NumRequeues(item)
+		if curr > ret {
+			ret = curr
+		}
+	}
+
+	return ret
+}
+
+func (r *MaxOfRateLimiter) Forget(item interface{}) {
+	// 循环遍历 Forget
+	for _, limiter := range r.limiters {
+		limiter.Forget(item)
+	}
+}
+```
+
+Kubernetes 中默认的控制器限速器初始化就是使用的混合限速器
+
+```go
+// DefaultControllerRateLimiter is a no-arg constructor for a default rate limiter for a workqueue.  It has
+// both overall and per-item rate limiting.  The overall is a token bucket and the per-item is exponential
+// 实例化默认的限速器，由 ItemExponentialFailureRateLimiter 和 BucketRateLimiter 组成的混合限速器
+func DefaultControllerRateLimiter() RateLimiter {
+	return NewMaxOfRateLimiter(
+		NewItemExponentialFailureRateLimiter(5*time.Millisecond, 1000*time.Second),
+		// 10 qps, 100 bucket size.  This is only for retry speed and its only the overall factor (not per item)
+		// 10 qps, 100 buckent 容量
+		&BucketRateLimiter{Limiter: rate.NewLimiter(rate.Limit(10), 100)},
+	)
+}
+
+func NewItemExponentialFailureRateLimiter(baseDelay time.Duration, maxDelay time.Duration) RateLimiter {
+	return &ItemExponentialFailureRateLimiter{
+		failures:  map[interface{}]int{},
+		baseDelay: baseDelay,
+		maxDelay:  maxDelay,
+	}
+}
+```
