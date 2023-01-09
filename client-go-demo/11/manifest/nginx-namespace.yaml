@@ -1,6 +1,0 @@
-apiVersion: v1 
-kind: Namespace 
-metadata:
-  name: lt
-  labels:
-    name: label-test
