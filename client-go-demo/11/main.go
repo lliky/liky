@@ -1,12 +1,14 @@
 package main
 
 import (
+	"fmt"
+	"log"
+
 	"github.com/liky/client-go-demo/11/pkg"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"log"
 )
 
 func main() {
@@ -18,6 +20,7 @@ func main() {
 
 	// 集群外部获取 config
 	config, err := clientcmd.BuildConfigFromFlags("", clientcmd.RecommendedHomeFile)
+	fmt.Println(config)
 	if err != nil {
 		// 集群内部获取 config
 		inClusterConfig, err := rest.InClusterConfig()

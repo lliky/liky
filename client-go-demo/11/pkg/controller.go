@@ -2,6 +2,10 @@ package pkg
 
 import (
 	"context"
+	"fmt"
+	"reflect"
+	"time"
+
 	v12 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	v13 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -14,8 +18,6 @@ import (
 	v1 "k8s.io/client-go/listers/networking/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
-	"reflect"
-	"time"
 )
 
 const (
@@ -63,6 +65,7 @@ func (c *controller) deleteIngress(obj interface{}) {
 }
 
 func (c *controller) Run(stopCh chan struct{}) {
+	fmt.Println("Runing")
 	for i := 0; i < workNum; i++ {
 		go wait.Until(c.worker, time.Minute, stopCh)
 	}
@@ -94,6 +97,7 @@ func (c *controller) syncService(key string) error {
 	if err != nil {
 		return err
 	}
+	fmt.Println(namespace, name)
 	// 删除
 	service, err := c.serviceLister.Services(namespace).Get(name)
 	if errors.IsNotFound(err) {
@@ -109,9 +113,12 @@ func (c *controller) syncService(key string) error {
 	if err != nil && !errors.IsNotFound(err) {
 		return err
 	}
-
+	fmt.Println("abac：", ok)
+	fmt.Printf("result: %v\n", ingress)
+	fmt.Printf("err: %v\n", err)
 	if ok && errors.IsNotFound(err) {
 		// create ingress
+		fmt.Println("create ingress")
 		ig := c.constructIngress(namespace, name)
 		_, err := c.client.NetworkingV1().Ingresses(namespace).Create(context.TODO(), ig, v13.CreateOptions{})
 		if err != nil {
@@ -119,6 +126,7 @@ func (c *controller) syncService(key string) error {
 		}
 	} else if !ok && ingress != nil {
 		// delete ingress
+		fmt.Println("delete ingress")
 		err := c.client.NetworkingV1().Ingresses(namespace).Delete(context.TODO(), name, v13.DeleteOptions{})
 		if err != nil {
 			return err
