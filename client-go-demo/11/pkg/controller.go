@@ -3,6 +3,7 @@ package pkg
 import (
 	"context"
 	"fmt"
+	v14 "k8s.io/api/core/v1"
 	"reflect"
 	"time"
 
@@ -55,7 +56,8 @@ func (c *controller) enqueue(obj interface{}) {
 func (c *controller) deleteIngress(obj interface{}) {
 	ingress := obj.(*v12.Ingress)
 	ownerReference := v13.GetControllerOf(ingress)
-	if ownerReference != nil {
+	fmt.Println("ownerReference: ", ownerReference)
+	if ownerReference == nil {
 		return
 	}
 	if ownerReference.Kind != "Service" {
@@ -119,7 +121,7 @@ func (c *controller) syncService(key string) error {
 	if ok && errors.IsNotFound(err) {
 		// create ingress
 		fmt.Println("create ingress")
-		ig := c.constructIngress(namespace, name)
+		ig := c.constructIngress(service)
 		_, err := c.client.NetworkingV1().Ingresses(namespace).Create(context.TODO(), ig, v13.CreateOptions{})
 		if err != nil {
 			return err
@@ -144,12 +146,18 @@ func (c *controller) handlerError(key string, err error) {
 	c.queue.Forget(key)
 }
 
-func (c *controller) constructIngress(namespace string, name string) *v12.Ingress {
+func (c *controller) constructIngress(service *v14.Service) *v12.Ingress {
 	ingress := v12.Ingress{}
-	ingress.Namespace = namespace
-	ingress.Name = name
+
+	ingress.ObjectMeta.OwnerReferences = []v13.OwnerReference{
+		*v13.NewControllerRef(service, v14.SchemeGroupVersion.WithKind("Service")),
+	}
+	ingress.Namespace = service.Namespace
+	ingress.Name = service.Name
 	pathType := v12.PathTypePrefix
+	icn := "nginx"
 	ingress.Spec = v12.IngressSpec{
+		IngressClassName: &icn,
 		Rules: []v12.IngressRule{
 			{
 				Host: "example.com",
@@ -161,7 +169,7 @@ func (c *controller) constructIngress(namespace string, name string) *v12.Ingres
 								PathType: &pathType,
 								Backend: v12.IngressBackend{
 									Service: &v12.IngressServiceBackend{
-										Name: name,
+										Name: service.Name,
 										Port: v12.ServiceBackendPort{
 											Number: 80,
 										},
