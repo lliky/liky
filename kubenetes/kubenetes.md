@@ -54,4 +54,10 @@ USER 容器使用的用户
 
 ## Node 节点
 * Kubelet: 负责监听节点上 Pod 的状态，同时负责上报节点和节点上面 Pod 的状态，负责与 Master 节点通信，并管理节点上面的 Pod。
-* Kube-Proxy: 负责 Pod 之间的通信和负载均衡，将指定的流量分发到后端正确的机器上。
+* Kube-Proxy: 负责 Pod 之间的通信和负载均衡，将指定的流量分发到后端正确的机器上。  
+    ```
+    查看 Kube-proxy 工作模式： curl 127.0.0.1:10249/proxyMode
+    Ipvs: 监听 Master 节点增加和删除 service 以及 endpoint 的消息，调用 Netlink 接口创建相应的 IPVS 规则，通过 IPVS 规则，将流量转发至相应的 Pod 上。
+    Iptables: 监听 Master 节点增加和删除 service 以及 endpoint 的消息，对于每一个 service ，他都会创建一个 iptables 规则，将 service 的 clusterIP 代理到后端对应的 Pod。
+    ```
+* CoreDNS: 用于 Kubernetes 集群内部 Service 的解析，可以让 Pod 把 Service 名称解析成 IP 地址，然后通过 Service 的 IP 地址进行连接到对应的应用上。
