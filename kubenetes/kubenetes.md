@@ -166,3 +166,79 @@ spec: # 必选，用于定义容器的详细信息
 #      hostPath: # 挂载本机目录
 #        path: /etc/hosts
 ```
+
+### Pod 探针
+* StartupProbe: 用于判断容器内应用程序是否已经启动。如果配置了 startupProbe，就会先禁止其他的探测，直到它成功为止，成功后将不再进行探测。
+* LivenessProbe: 用于探测容器是否运行，如果探测失败，kubelet 会根据配置的重启策略进行相应的处理。若没有配置该探测，默认就是 sucess。
+* ReadinessProbe: 一般用于探测容器内的程序是否健康，它的返回值如果为 success，那么就代表这个容器已经完成启动，并且程序已经是可以接受流量的状态
+
+### Pod 探针的检测方式
+* ExecAction: 在容器内执行一个命令，如果返回值为 0，则认为容器健康
+* TCPSocketAction: 通过 TCP 连接检查容器内的端口是否通的，如果是通的就认为容器健康
+* HTTPGetAction: 通过应用程序暴露的 API 地址来检查程序是否是正常的，如果状态码为 200 ～ 400 之间，则认为容器健康。
+
+### 探针检查参数
+```
+initialDelaySeconds # 容器启动后要等待多少秒才启动启动、存活和就绪探针，默认是 0s。
+timeoutSeconds     # 探测的超时后等待多少秒。默认值是 1s。
+periodSeconds # 执行探测时间间隔。默认值是 10s。
+successThreshold # 探针在失败后，被视为成功的最小连续成功数。默认值 1。
+failureThreshold # 探针连续失败了 failureThreshold 次之后，kubernetes 认为总体上检查1已失败：容器状态未就绪、不健康、不活跃。对于启动或存活探针而言，如果至少有 failureThreshold 个探针已失败，将重启容器。
+```
+
+## Deployment
+用于部署无状态的服务，这个最常用的控制器。可以管理多个副本的 Pod 实现无缝迁移、自动扩容缩容、自动灾难恢复、一键回滚等功能。
+
+### 创建一个 Deployment
+#### 命令创建
+```
+kubectl create deployment nginx --image=nginx --replicas=3
+```
+### Deployment 的更新
+
+### Deployment 的回滚
+```
+kubectl rollout history deployment name
+kubectl rollout undo deploy name  # 回到上一次
+kubeclt rollout history deploy name --revision=5 # 指定版本的详细信息
+kubectl rollout undo deploy name --to-verison=5 # 回滚到指定版本
+```
+
+### Deployment 的扩容
+```
+kubectl scale --replicas=4 
+```
+
+### Deployment 的暂停
+```
+kubectl rollout pause deployment name
+kubectl set image deploy name
+kubectl rollout resume deploy name # 恢复
+```
+
+### 滚动更新策略
+  .spec.strategy.type: 更新 deployment 的方式，默认是 rollingUpdate
+    rollingUpdate:  滚动更新，可以执行 maxSurge 和 maxUnavailbel
+    maxUnavailable: 指定在回滚或更新时最大不可用的 Pod 的数量，可选字段，默认是 25%，可以设置成数字或百分比，如果该值为 0，那么 maxSurge 就不能为 0。
+    maxSurge: 可以超过期望值的最大 Pod 数，可选字段，默认为 25%，可以设置成数字或百分比，如果该值为 0，那么 maxUnavailable 就不能为 0。
+
+  Recreate: 重建，先删除旧的 Pod，在创建新的 Pod
+
+
+## StatefulSet
+
+常用于管理有状态应用程序的工作负载 API 对象。StatefulSet 为每个 Pod 维护了一个粘性标识，一般格式为 StatefulSetName-Number。StatefulSet 创建的 Pod 一般使用 Headless Service (无头服务)进行通信，和普通的 Service 的区别在于 Headless Service 没有 ClusterIP，它使用的是 Endpoint 进行互相通信，Headless 一般的格式为：
+**statefulSetName-{0...N-1}.serviceName.namespace.svc.cluster.local**
+* serverName 为 Headless Service 的名字，创建 statefulSet 时，必须指定 Headless Service 名称。
+* 0...N-1 为 Pod 所在的序号，从 0 开始
+ 
+### statefulSet 更新策略
+* rollingUpdate 
+  * partition 分段更新，灰度发布，小于 partition 不更新
+* OnDelete 
+
+### 级联删除和非级联删除
+级联删除：删除 sts 时同时删除 Pod
+非级联删除：删除 sts 时不删除 Pod
+kubectl delte sts name --cascade=false # 非级联删除
+
