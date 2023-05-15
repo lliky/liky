@@ -263,3 +263,8 @@ Horizontal Pod Autoscaler: Pod 的水平自动伸缩器。
 kubectl autoscale deploy name --cpu-percent=20 --min2 --max=5
 kubectl get hpa
 ```
+
+## Label 和 Selector
+* Label: 对 k8s 中各种资源进行分类、分组，添加一个具有特别属性的一个标签
+* Selector: 用过一个过滤的语法进行查找找到对应的资源
+
