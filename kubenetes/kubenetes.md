@@ -242,3 +242,8 @@ kubectl rollout resume deploy name # 恢复
 非级联删除：删除 sts 时不删除 Pod
 kubectl delte sts name --cascade=false # 非级联删除
 
+## DaemonSet 
+守护进程集，简称：ds，在所有节点或者是匹配的节点上都部署一个 Pod。
+
+日志采集，节点监控，服务暴露
+
