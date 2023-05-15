@@ -242,3 +242,24 @@ kubectl rollout resume deploy name # 恢复
 非级联删除：删除 sts 时不删除 Pod
 kubectl delte sts name --cascade=false # 非级联删除
 
+
+```shell
+# 打标签
+kubectl label node name key=name
+```
+### DaemonSet 更新和回滚
+
+
+## HPA 
+Horizontal Pod Autoscaler: Pod 的水平自动伸缩器。
+观察 Pod 的 CPU、内存使用率自动扩展或缩容 Pod 的数量。
+不适用于无法缩放的对象，比如 DaemonSet。
+
+用于 CPU、内存、自定义指标的扩缩容。
+
+必须定义 Request 参数，必须安装 metric-server
+
+```
+kubectl autoscale deploy name --cpu-percent=20 --min2 --max=5
+kubectl get hpa
+```
