@@ -272,3 +272,20 @@ kubectl get hpa
 * Label: 对 k8s 中各种资源进行分类、分组，添加一个具有特别属性的一个标签
 * Selector: 用过一个过滤的语法进行查找找到对应的资源
 
+## Service
+可以简单理解为逻辑上的一组 Pod。一种可以访问可以访问 Pod 的策略，而且其他 Pod 可以通过这个 Service 访问到这个 Service 代理的 Pod 。有一个固定名称，一旦创建就固定不变 。
+
+### 使用 Service 代理 k8s 外部应用  
+希望在生产环境中使用某个固定的名称非 IP 地址进行访问外部的中间件服务。
+希望 Service 指向另一个 Namespace 中或其他集群中的服务
+某个项目正在迁移至 k8s 集群，但是一部分服务仍然在集群外部，此时可以使用 service 代理至 k8s 集群外部的服务。
+
+### 使用 Service 反代外部域名
+
+跨域的问题？
+
+### Service 类型
+* ClusterIP: 在集群内部使用，默认值
+* ExternalName: 通过返回定义的 CNAME 别名
+* NodePort: 在所有安装了 kube-proxy 的节点上打开一个端口，此端口可以代理至后端 Pod，然后集群外部可以使用节点的 IP 地址和 NodePort 的端口号访问到集群 Pod 的服务。NodePort 端口范围默认值 30000 - 32767
+* LoadBalancer: 使用云提供商的负载均衡器公开服务
