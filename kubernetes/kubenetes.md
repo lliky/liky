@@ -289,3 +289,40 @@ kubectl get hpa
 * ExternalName: 通过返回定义的 CNAME 别名
 * NodePort: 在所有安装了 kube-proxy 的节点上打开一个端口，此端口可以代理至后端 Pod，然后集群外部可以使用节点的 IP 地址和 NodePort 的端口号访问到集群 Pod 的服务。NodePort 端口范围默认值 30000 - 32767
 * LoadBalancer: 使用云提供商的负载均衡器公开服务
+
+## ConfigMap
+一般用 ConfigMap 去管理一些配置文件、或者大量的环境变量信息。
+ConfigMap 将配置和 Pod 分开，有一个 nginx, nginx.conf 写到一起，yaml 文件不好改。更易于配置文件的更改和管理。
+Secret：Secret 更倾向于存储和敏感、加密的配置信息。
+
+```
+kubectl create configmap <map-name> <data-source>
+```
+* map-name : configmap 的名称
+* data-source: 可以是目录，文件，字面值。
+
+### 从一个目录创建 ConfigMap
+
+``` shell
+kubectl create configmap <map-name> --from-file=dir-name
+```
+
+### 从一个文件创建 ConfigMap
+
+```shell
+kubectl create configmap <map-name> --from-file=file-name
+# 可以多个文件一起
+kubectl create configmap <map-name> --from-file=file-name --from-file
+
+使用 --from-env-file 创建，就是键值对那种  key: value
+
+```
+#### 定义文件可以说使用自定义键名
+```shell
+kubectl create configmap <map-name> --from-file=custom-name=file-name
+```
+
+### 基于字面值创建 ConfigMap
+```shell
+kubectl ceate configmap <map-name> --from-literal=color=red --from-literal=subject=math
+```
