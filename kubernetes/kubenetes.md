@@ -326,3 +326,7 @@ kubectl create configmap <map-name> --from-file=custom-name=file-name
 ```shell
 kubectl ceate configmap <map-name> --from-literal=color=red --from-literal=subject=math
 ```
+
+**挂在 pod 上面的 configmap 会自动更新（kubelet sync  period 1min + TTL of configmap）；或者修改 pod 里面的内容比如 annotations**
+
+
