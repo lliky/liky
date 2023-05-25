@@ -330,3 +330,42 @@ kubectl ceate configmap <map-name> --from-literal=color=red --from-literal=subje
 **挂在 pod 上面的 configmap 会自动更新（kubelet sync  period 1min + TTL of configmap）；或者修改 pod 里面的内容比如 annotations**
 
 
+## Secret
+
+用来保存敏感信息的，密码、令牌或者密钥的对象
+
+### Creating a Secret by kubectl
+```shell
+# 特殊字符【$,\,*,=,!】必须用单引号''括起来，
+
+kubectl create secret generic db-user-pass --from-literal=username=admin --from-literal=password='S!B\*d$zDsb='
+
+kubectl create secret generic db-user-pass-3 --from-file=username=./username.txt --from-file=passwd=./password.txt
+
+kubectl get secret db-user-pass -o jsonpath='{.data}'
+
+kubectl edit secret <secret-name>
+kubectl delete secret <secret-name>
+```
+
+### Creating a secret by configuration file
+
+有两种类型：data 和 stringData
+data: 任意字符串 base64 加密存储
+stringData: 编写的时候可以不用 base64 加密，当 create 和 update 的时候自动加密
+
+也可以两种都写到同一个 yaml 文件里面，但是 stringData 优先级最高，如果两种都定义了，那么 stringData 里面的数据生效
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysecret
+type: Opaque
+data:
+  username: YWRtaW4=
+stringData:
+  username: admin
+```
+### Creating a secret by kustomize
+
+
