@@ -369,3 +369,30 @@ stringData:
 ### Creating a secret by kustomize
 
 
+## Volumes
+
+### HostPath 
+
+挂载主机目录
+
+实例：
+[hostpath](./volumes/hostpath.yaml)
+
+#### type
+specify a type for a hostpath volume
+
+* **不填** 不会检查 hostpath 目录
+* **DirectoryOrCreate** 如果主机目录不存在，将会创建权限是 755 的目录，和 kubelet 有相同的组和所有权
+* **Directory** 主机目录必须存在
+* **FileOrCreate** 如果主机文件不存在，将会创建权限是 644 的文件，和 kubelet 有相同的组和所有权(不创建文件的父目录，如果不存在，pod 也会失败)
+* **File** 文件必须存在
+* **Socket** socket 必须存在
+* **CharDevice** 字符设备必须存在
+* **BlockDevice** 块设备必须存在
+
+### emptyDir
+用作数据共享，Pod 里面的容器都可以读取，如果 Pod 被删除，那么 emptyDir 里面的容器数据也会被删除。容器 crashs ，Pod 没有被删除，emptyDir 里面的数据也不会删除
+
+[emptyDir](./volumes/emptydir.yaml)
+
+可以设置 emptyDir 的容量，sizeLimit.
