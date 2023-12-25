@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 
@@ -28,6 +29,7 @@ func main() {
 			log.Fatalln("can't get config")
 		}
 		config = inClusterConfig
+		context.Background()
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
