@@ -312,7 +312,7 @@ func (c *cancelCtx) cancel(removeFromParent bool, err, cause error) {
 	}
 	for child := range c.children {
 		// NOTE: acquiring the child's lock while holding parent's lock.
-		child.cancel(false, err, cause)
+		child.cancel(false, err, cause) //为什么传递 false 因为父 children 会置为nil
 	}
 	c.children = nil
 	c.mu.Unlock()
@@ -323,3 +323,229 @@ func (c *cancelCtx) cancel(removeFromParent bool, err, cause error) {
 }
 ```
 
+- cancelCtx.cancel 方法有三个入参：
+  - removeFromParent：表示当前 context 是否需要父 context 的 children map 中删除；
+  - err：cancel 后的错误
+  - cause: cancel 后的错误原因
+- 进入主体，首先校验传入的 err 是否为 nil, 若为空则 panic；
+- 检查 cause 是否为 nil，若为空则将 err 赋值到 cause；
+- 加锁 ；
+- 检查 cancelCtx 自带的 err 是否为空，若非空说明已经被 cancel，则解锁返回；
+- 将 err, cause  赋值给 cancelCtx.err, cancelCtx.cause ；
+- 处理 cancelCtx 的 chan，若之前未初始化，则直接注入一个 closeChan，否则关闭该 chan；
+- 遍历当前 cancelCtx.children map，依次将 children context 都进行取消，置为 nil；
+- 解锁；
+- 根据传入的 removeFromParent flag 判断是否需要手动把 cancelCtx 从 parent 的 children map 中移除；  
+
+如何将 cancelCtx 从 parent 的 children map 中移除？
+
+```go
+func removeChild(parent Context, child canceler) {
+	p, ok := parentCancelCtx(parent)
+	if !ok {
+		return
+	}
+	p.mu.Lock()
+	if p.children != nil {
+		delete(p.children, child)
+	}
+	p.mu.Unlock()
+}
+```
+
+- 如果 parent 不是 cancelCtx，直接返回（以为只有 cancelCtx 才有 children map）
+- 加锁；
+- 从 parent 的 children map 中删除对应的 child；
+- 解锁；
+
+### 2.6 timerCtx
+
+#### 2.6.1 数据结构
+
+```go
+type timerCtx struct {
+	*cancelCtx
+	timer *time.Timer // Under cancelCtx.mu.
+
+	deadline time.Time
+}
+```
+
+timerCtx 在 cancelCtx 基础之上又做了一层封装，除了继承 cancelCtx  能力之外新增了两个字段：
+
+- timer：用于定时终止 context；
+- deadline：用于字段 timerCtx 的过期时间；
+
+#### 2.6.2 timerCtx.Deadline
+
+```
+func (c *timerCtx) Deadline() (deadline time.Time, ok bool) {
+	return c.deadline, true
+}
+```
+
+context.Context interface 下的 Deadline 仅在 timerCtx 中有效，展示过期时间；
+
+#### 2.6.3 timerCtx.cancel
+
+```go
+func (c *timerCtx) cancel(removeFromParent bool, err, cause error) {
+	c.cancelCtx.cancel(false, err, cause)
+	if removeFromParent {
+		// Remove this timerCtx from its parent cancelCtx's children.
+		removeChild(c.cancelCtx.Context, c)
+	}
+	c.mu.Lock()
+	if c.timer != nil {
+		c.timer.Stop()
+		c.timer = nil
+	}
+	c.mu.Unlock()
+}
+```
+
+- 复用继承的 cancelCtx 的 cancel 能力，进行 cancel 处理；
+- 判断是否手动从 parent 的 children map 中移除，若是则进行处理；
+- 加锁；
+- 停止 timer.Timer，释放资源；
+- 解锁；
+
+### 2.7 context.WithTimeout & context.WithDeadline
+
+```go
+func WithTimeout(parent Context, timeout time.Duration) (Context, CancelFunc) {
+	return WithDeadline(parent, time.Now().Add(timeout))
+}
+```
+
+context.WithTimeout 方法用于构造一个 timerCtx，本质上会调用 context.WithDeadline方法
+
+```go
+func WithDeadline(parent Context, d time.Time) (Context, CancelFunc) {
+	if parent == nil {
+		panic("cannot create context from nil parent")
+	}
+	if cur, ok := parent.Deadline(); ok && cur.Before(d) {
+		// The current deadline is already sooner than the new one.
+		return WithCancel(parent)
+	}
+	c := &timerCtx{
+		cancelCtx: newCancelCtx(parent),
+		deadline:  d,
+	}
+	propagateCancel(parent, c)
+	dur := time.Until(d)
+	if dur <= 0 {
+		c.cancel(true, DeadlineExceeded, nil) // deadline has already passed
+		return c, func() { c.cancel(false, Canceled, nil) }
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.err == nil {
+		c.timer = time.AfterFunc(dur, func() {
+			c.cancel(true, DeadlineExceeded, nil)
+		})
+	}
+	return c, func() { c.cancel(true, Canceled, nil) }
+}
+```
+
+- 校验 parent context 非空；
+- 校验 parent 的过期时间是否早于自己，若是，则构造一个 cancelCtx 返回即可；
+- 构造出一个新的 timerCtx；
+- 启动守护方法，同步 parent 的 cancel  事件到子 context；
+- 判断过期时间是否已到，若是，直接 cancel timerCtx，并返回 DeadlineExceeded 的错误；
+- 加锁；
+- 启动 time.Timer，设定一个延时时间，即达到过期时间后会终止该 timerCtx, 并返回 DeadlineExceeded 的错误；
+- 解锁；
+- 返回 timerCtx，已经封装了 cancel 逻辑的闭包 cancel 函数。
+
+### 2.8 valueCtx
+
+#### 2.8.1 数据结构
+
+```go
+type valueCtx struct {
+	Context
+	key, val any
+}
+```
+
+- valueCtx 继承了一个 parent Context；
+- 一个 valueCtx 中仅有一组 kv 对；
+
+#### 2.8.2 valueCtx.Value
+
+```go
+func (c *valueCtx) Value(key any) any {
+	if c.key == key {
+		return c.val
+	}
+	return value(c.Context, key)
+}
+```
+
+- 假如当前 valueCtx 的 key 等于用户传入的 key，则直接返回其 value；
+- 假如不等，则从 parent context 中依次想上寻找。
+
+```
+func value(c Context, key any) any {
+	for {
+		switch ctx := c.(type) {
+		case *valueCtx:
+			if key == ctx.key {
+				return ctx.val
+			}
+			c = ctx.Context
+		case *cancelCtx:
+			if key == &cancelCtxKey {
+				return c
+			}
+			c = ctx.Context
+		case *timerCtx:
+			if key == &cancelCtxKey {
+				return ctx.cancelCtx
+			}
+			c = ctx.Context
+		case *emptyCtx:
+			return nil
+		default:
+			return c.Value(key)
+		}
+	}
+}
+```
+
+- 启动一个 for 循环，由上而下，由子及父，依次对 key 进行匹配；
+- 其中 cancelCtx，timerCtx，emptyCtx 类型会有特殊的处理方式；
+- 找到匹配到的 key，则将该组 value 进行返回。
+
+#### 2.8.3 valueCtx 用法小结
+
+valueCtx 不适合作为存储介质，存放大量的 kv 数据，原因有三：
+
+- 一个 valueCtx 实例只能存一个 kv 对，n 个 kv 对会嵌套 n 个 valueCtx，造成空间浪费；
+- 基于 k 寻找 v 的过程是线性的，时间复杂度 O(n)；
+- 不支持基于 k 的去重，相同 k 可能重复存在，并基于起点的不同，返回不同的 v。valueCtx 的定位类似于请求头，只适合存放少量作用域较大的全局 meta 数据。
+
+#### 2.8.4 context.WithValue
+
+```go
+func WithValue(parent Context, key, val any) Context {
+	if parent == nil {
+		panic("cannot create context from nil parent")
+	}
+	if key == nil {
+		panic("nil key")
+	}
+	if !reflectlite.TypeOf(key).Comparable() {
+		panic("key is not comparable")
+	}
+	return &valueCtx{parent, key, val}
+}
+```
+
+- 若 parent context 为空， panic；
+- 若 key 为空，panic；
+- 若 key 的类型不能比较，panic；
+- 包括 parent context 以及 kv 对，返回一个新的 valueCtx。
