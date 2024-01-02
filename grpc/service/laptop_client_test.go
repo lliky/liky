@@ -44,7 +44,7 @@ func startTestLaptopServer(t *testing.T) (*service.LaptopServer, string) {
 
 	pb.RegisterLaptopServiceServer(grpcServer, laptopServer)
 
-	listener, err := net.Listen("tcp", "192.168.111.160:9999") // random available port
+	listener, err := net.Listen("tcp", ":0") // random available port
 	require.NoError(t, err)
 
 	go grpcServer.Serve(listener)
