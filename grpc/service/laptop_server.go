@@ -8,7 +8,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"log"
-	"time"
 )
 
 // LaptopServer is the server that provides laptop services
@@ -42,7 +41,7 @@ func (server *LaptopServer) CreateLaptop(ctx context.Context, req *pb.CreateLapt
 		lapTop.Id = id.String()
 	}
 	//some heavy processsing
-	time.Sleep(6 * time.Second)
+	//time.Sleep(6 * time.Second)
 	if errors.Is(ctx.Err(), context.Canceled) {
 		log.Printf("request is canceled")
 		return nil, status.Error(codes.Canceled, "request is canceled")
@@ -68,4 +67,25 @@ func (server *LaptopServer) CreateLaptop(ctx context.Context, req *pb.CreateLapt
 		Id: lapTop.Id,
 	}
 	return res, nil
+}
+
+func (server *LaptopServer) SearchLaptop(req *pb.SearchLaptopRequest, stream pb.LaptopService_SearchLaptopServer) error {
+	filter := req.GetFilter()
+	log.Printf("receive a search-laptop request with filter: %v", filter)
+	err := server.Store.Search(stream.Context(), filter, func(laptop *pb.Laptop) error {
+		res := &pb.SearchLaptopResponse{
+			Laptop: laptop,
+		}
+
+		err := stream.Send(res)
+		if err != nil {
+			return err
+		}
+		log.Printf("send laptop with id: %s", laptop.GetId())
+		return nil
+	})
+	if err != nil {
+		return status.Errorf(codes.Internal, "unexpected error: %v", err)
+	}
+	return nil
 }
