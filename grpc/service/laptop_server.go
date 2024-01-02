@@ -8,6 +8,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"log"
+	"time"
 )
 
 // LaptopServer is the server that provides laptop services
@@ -40,6 +41,17 @@ func (server *LaptopServer) CreateLaptop(ctx context.Context, req *pb.CreateLapt
 		}
 		lapTop.Id = id.String()
 	}
+	//some heavy processsing
+	time.Sleep(6 * time.Second)
+	if errors.Is(ctx.Err(), context.Canceled) {
+		log.Printf("request is canceled")
+		return nil, status.Error(codes.Canceled, "request is canceled")
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		log.Printf("deadline is exceeded")
+		return nil, status.Error(codes.DeadlineExceeded, "deadline is exceeded")
+	}
+
 	// save the laptop to store
 	err := server.Store.Save(lapTop)
 	if err != nil {
