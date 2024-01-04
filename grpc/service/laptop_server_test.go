@@ -64,7 +64,7 @@ func TestLaptopServer_CreateLaptop(t *testing.T) {
 			req := &pb.CreateLaptopRequest{
 				Laptop: tc.laptop,
 			}
-			server := service.NewLaptopServer(tc.store)
+			server := service.NewLaptopServer(tc.store, nil)
 			rsp, err := server.CreateLaptop(context.Background(), req)
 			//t.Log("err: ", err)
 			if tc.code == codes.OK {
