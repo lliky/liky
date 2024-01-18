@@ -66,7 +66,7 @@ func testRateLaptop(laptopClient *client.LaptopClient) {
 }
 
 const (
-	username        = "user1"
+	username        = "admin1"
 	password        = "secret"
 	refreshDuration = 30 * time.Second
 )

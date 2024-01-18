@@ -49,6 +49,7 @@ func (interceptor *AuthInterceptor) Stream() grpc.StreamClientInterceptor {
 }
 
 func (interceptor *AuthInterceptor) attachToken(ctx context.Context) context.Context {
+	log.Printf("accessToken: %v", interceptor.accessToken)
 	return metadata.AppendToOutgoingContext(ctx, "authorization", interceptor.accessToken)
 }
 func (interceptor *AuthInterceptor) scheduleRefreshToken(refreshDuration time.Duration) error {
@@ -75,6 +76,7 @@ func (interceptor *AuthInterceptor) scheduleRefreshToken(refreshDuration time.Du
 func (interceptor *AuthInterceptor) refreshToken() error {
 	accessToken, err := interceptor.authClient.Login()
 	if err != nil {
+		log.Printf("refreshToken err: %v", err)
 		return err
 	}
 	interceptor.accessToken = accessToken
