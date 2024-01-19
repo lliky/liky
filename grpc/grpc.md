@@ -1,7 +1,5 @@
 # GRPC
 
-
-
 ## protoc
 
 它是Protocol Buffers 的编译器，用于将 .proto 文件编译为不同编程语言的代码。
@@ -69,6 +67,182 @@ $ protoc --proto_path=proto proto/*.proto  --go_out=pb --go-grpc_out=pb
 - `proto/*.proto`：要编译的 .proto 文件文件，通配符说明编译所有文件，可以指定单个文件
 - `--go_out=pb`：生成的 Go 语言代码的输出路径 path1，需要和 .proto 文件里面的 `option go_package="path2;pacakge";`搭配使用，最终代码路径是 `path1 + path2`
 - `--go-grpc_out=pb`: 生成 gRPC 代码，路径和go_out 一样
+
+
+
+## protobuf 语法
+
+Protocol buffers 是 Google 的语言中立、平台中立、可扩展的结构化数据序列化。我们以 [proto3](https://protobuf.dev/programming-guides/proto3/)  为例。
+
+### 基本规范
+
+文件以 **.proto** 作为文件后缀。
+
+除结构定义外，其他语句以分号结尾
+
+rpc 方法定义结尾的分号可有可无
+
+结构定义：message、service、enum
+
+message 命名采用驼峰命名方式，字段采用小写字母 + 下划线
+
+enum 命名采用驼峰命名方式，字段采用大写字母 + 下划线
+
+service 和 rpc 方法名统一采用驼峰命名
+
+```protobuf
+syntax="proto3";
+
+enum Unit {
+	UNKNOWN = 0;
+	BIT = 1;
+	BYTE = 2;
+}
+message RateLaptopRequest {
+	string laptop_id = 1;
+}
+message RateLaptopResponse {
+	string rated_count = 1;
+	Unit unit = 2;
+}
+
+service LaptopService {
+	rpc RateLaptop(RateLaptopRequest)returns(RateLaptopResponse){};  // 可有可无
+}
+```
+
+### 字段规则
+
+字段格式：**限定修饰符|数据类型|字段名称| = |字段编码值| **
+
+限定修饰符：
+
+- optional: 
+  - 没有设置：返回默认值，不会被序列化
+  - 设置：显式设置，会被序列化，也可解析出来
+- repeated: 可以重复 0 次或者多次，会保留重复的次序。我认为就是数组
+- map: 键值对
+
+数据类型：
+
+| .proto tpye | Notes                                                  | Go type |
+| ----------- | ------------------------------------------------------ | ------- |
+| double      |                                                        | float64 |
+| float       |                                                        | float32 |
+| int32       | 使用可变长度编码。负数效率低，可以用 sint32            | int32   |
+| int64       | 使用可变长度编码。负数效率低，可以用 sint64            | int64   |
+| uint32      | 使用可变长度编码。                                     | uint32  |
+| uint64      | 使用可变长度编码。                                     | uint64  |
+| sint32      | 使用可变长度编码。可以有效的编码负数                   | int32   |
+| sint64      | 使用可变长度编码。可以有效的编码负数                   | int64   |
+| fixed32     | 始终是 4 字节，值如果大于 2 的 28 次方，比 uint32 有效 | uint32  |
+| fixed64     | 始终是 8 字节，值如果大于 2 的 56 次方，比 uint64 有效 | uint64  |
+| sfixed32    | 始终是 4 字节                                          | int32   |
+| sfixed64    | 始终是 8 字节                                          | int64   |
+| bool        |                                                        | bool    |
+| string      | 字符串包含 utf-8 编码，长度不超过 2 的 32 次方         | string  |
+| bytes       | 任意直接序，长度不超过 2 的 32 次方                    | []byte  |
+
+字段名称：建议采用下划线分割
+
+字段编码值：
+
+* 每个编号值介于 1 - 536,870,911。
+
+* **给定的编号在该消息中必须唯一**。
+
+* 值 19000 - 19999 保留字段号，不可用。
+* **一旦字段被使用，就不要更改**
+* 建议使用 1 - 15 编号，需要一个字节去编码
+
+
+
+### 枚举
+
+编号必须从 0 开始，因为可以作为默认值
+
+
+
+### 导入 .proto
+
+```protobuf
+import "myproject/other_protos.proto";
+```
+
+### service 定义
+
+```protobuf
+service LaptopService {
+  // unary RPC
+  rpc CreateLaptop(CreateLaptopRequest) returns (CreateLaptopResponse) {};
+  // client streaming PRC
+  rpc SearchLaptop( SearchLaptopRequest) returns (stream SearchLaptopResponse) {};
+  // server streaming RPC
+  rpc UploadImage(stream UploadImageRequest) returns (UploadImageResponse) {};
+  //  bidirectional streaming RPC
+  rpc RateLaptop(stream RateLaptopRequest) returns (stream RateLaptopResponse) {};
+}
+```
+
+可以定义 4 中 RPC
+
+### message 定义
+
+```protobuf
+message SearchResponse {
+  repeated Result results = 1; // Get result
+}
+
+message Result {
+  string url = 1;  
+  string title = 2;
+  repeated string snippets = 3;
+}
+
+message Outer {                // Level 0
+        message MiddleAA {        // Level 1
+            message Inner {        // Level 2
+                int64 ival = 1;
+                bool  booly = 2;
+            }
+        }
+        message MiddleBB {         // Level 1
+            message Inner {         // Level 2
+                int32 ival = 1;
+                bool  booly = 2;
+            }
+        }
+    }
+```
+
+可以通过 // 去注释， 嵌套定义
+
+### Map 类型
+
+```
+map<key_type, value_type> map_field = N;
+```
+
+- 键、值类型可以是内置的类型，也可以是自定义message类型
+- 字段不支持repeated属性
+
+
+
+### Oneof
+
+如果消息包含多个字段，但是最多设置一个字段，这样就可以省内存
+
+```protobuf
+message UploadImageRequest {
+  oneof data {
+    ImageInfo info = 1;
+    bytes chunk_data = 2;
+  }
+}
+```
+
+会覆盖，按照定义顺序，得到最后一个。
+
 
 
 ## evans
