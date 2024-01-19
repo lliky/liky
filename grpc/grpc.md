@@ -245,4 +245,94 @@ message UploadImageRequest {
 
 
 
-## evans
+## gRPC 反射 evans CLI
+
+#### 安装
+
+可以前往 [GitHub](https://github.com/ktr0731/evans/releases) ，选择版本安装；将 文件解压放到可执行路径就行
+
+```shell
+$ tar -xzvf evans_linux_amd64.tar.gz -C /usr/local/evans/
+$ export PATH="$PATH:/usr/local/evans"
+```
+
+#### 登录
+
+```shell
+$ evans -r repl -p 8080
+# 检查 gRPC 服务器有哪些服务
+$ evans -p 8080 -r cli list
+```
+
+#### 关键字
+
+show、service、message、desc、call
+
+##### show
+
+```shell
+127.0.0.1:8080> show service
++---------------+--------------+---------------------+----------------------+
+|    SERVICE    |     RPC      |    REQUEST TYPE     |    RESPONSE TYPE     |
++---------------+--------------+---------------------+----------------------+
+| AuthService   | Login        | LoginRequest        | LoginResponse        |
+| LaptopService | CreateLaptop | CreateLaptopRequest | CreateLaptopResponse |
+| LaptopService | SearchLaptop | SearchLaptopRequest | SearchLaptopResponse |
+| LaptopService | UploadImage  | UploadImageRequest  | UploadImageResponse  |
+| LaptopService | RateLaptop   | RateLaptopRequest   | RateLaptopResponse   |
++---------------+--------------+---------------------+----------------------+
+```
+
+##### service
+
+```shell
+127.0.0.1:8080> service AuthService
+
+AuthService@127.0.0.1:8080> 
+```
+
+##### desc
+
+```shell
+AuthService@127.0.0.1:8080> show message
++----------------------+
+|       MESSAGE        |
++----------------------+
+| CreateLaptopRequest  |
+| CreateLaptopResponse |
+| LoginRequest         |
+| LoginResponse        |
+| RateLaptopRequest    |
+| RateLaptopResponse   |
+| SearchLaptopRequest  |
+| SearchLaptopResponse |
+| UploadImageRequest   |
+| UploadImageResponse  |
++----------------------+
+
+AuthService@127.0.0.1:8080> desc LoginRequest
++----------+-------------+----------+
+|  FIELD   |    TYPE     | REPEATED |
++----------+-------------+----------+
+| password | TYPE_STRING | false    |
+| username | TYPE_STRING | false    |
++----------+-------------+----------+
+```
+
+
+
+##### call a RPC
+
+```shell
+127.0.0.1:8080> service AuthService
+
+AuthService@127.0.0.1:8080> call Login
+username (TYPE_STRING) => admin1
+password (TYPE_STRING) => secret
+{
+  "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MDU2NDc4MDgsInVzZXJuYW1lIjoiYWRtaW4xIiwicm9sZSI6ImFkbWluIn0.9fC-ThbLHbAOYl1qikXPmnFsgiLNn8FM9R2IIA4oMjI"
+}
+```
+
+
+
