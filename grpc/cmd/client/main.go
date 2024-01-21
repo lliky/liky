@@ -1,13 +1,17 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"github.com/liky/grpc/client"
 	"github.com/liky/grpc/pb"
 	"github.com/liky/grpc/sample"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"log"
+	"os"
 	"strings"
 	"time"
 )
@@ -79,11 +83,35 @@ func authMethods() map[string]bool {
 		path + "RateLaptop":   true,
 	}
 }
+
+func loadTLSCredentials() (credentials.TransportCredentials, error) {
+	// Load certificate of the CA who signed server's certificate
+	pemServerCA, err := os.ReadFile("cert/ca-cert.pem")
+	if err != nil {
+		return nil, err
+	}
+	certPool := x509.NewCertPool()
+	if !certPool.AppendCertsFromPEM(pemServerCA) {
+		return nil, fmt.Errorf("failed to add server CA's certificate")
+	}
+
+	//create the credentials and returns it
+	config := &tls.Config{
+		RootCAs: certPool,
+	}
+
+	return credentials.NewTLS(config), nil
+}
 func main() {
 	serverAddress := flag.String("address", "", "the server address")
 	flag.Parse()
 	log.Printf("dial server :%s", *serverAddress)
-	cc1, err := grpc.Dial(*serverAddress, grpc.WithInsecure())
+
+	tlsCredentials, err := loadTLSCredentials()
+	if err != nil {
+		log.Fatal("cannot load TLS credentials")
+	}
+	cc1, err := grpc.Dial(*serverAddress, grpc.WithTransportCredentials(tlsCredentials))
 	if err != nil {
 		log.Fatal("cannot dial server: ", err)
 	}
@@ -94,7 +122,7 @@ func main() {
 		log.Fatal("cannot create auth interceptor: ", err)
 	}
 
-	cc2, err := grpc.Dial(*serverAddress, grpc.WithInsecure(), grpc.WithUnaryInterceptor(interceptor.Unary()), grpc.WithStreamInterceptor(interceptor.Stream()))
+	cc2, err := grpc.Dial(*serverAddress, grpc.WithTransportCredentials(tlsCredentials), grpc.WithUnaryInterceptor(interceptor.Unary()), grpc.WithStreamInterceptor(interceptor.Stream()))
 	if err != nil {
 		log.Fatal("cannot dial server: ", err)
 	}
