@@ -175,9 +175,9 @@ import "myproject/other_protos.proto";
 service LaptopService {
   // unary RPC
   rpc CreateLaptop(CreateLaptopRequest) returns (CreateLaptopResponse) {};
-  // client streaming PRC
+  // server streaming PRC
   rpc SearchLaptop( SearchLaptopRequest) returns (stream SearchLaptopResponse) {};
-  // server streaming RPC
+  // client streaming RPC
   rpc UploadImage(stream UploadImageRequest) returns (UploadImageResponse) {};
   //  bidirectional streaming RPC
   rpc RateLaptop(stream RateLaptopRequest) returns (stream RateLaptopResponse) {};
@@ -336,3 +336,260 @@ password (TYPE_STRING) => secret
 
 
 
+## 4 种模式
+
+### Simple RPC( Unary RPC)
+
+#### 如何定义
+
+```protobuf
+syntax = "proto3";
+option go_package = "./;pb";
+
+message CreateLaptopRequest {
+  Laptop laptop = 1;
+}
+
+message CreateLaptopResponse {
+  string id = 1;
+}
+
+service LaptopService {
+  rpc CreateLaptop(CreateLaptopRequest) returns (CreateLaptopResponse) {};
+}
+```
+
+#### 代码实现
+
+server side 参考 [CreateLaptop](./service/laptop_server.go)
+
+client side 参考 [ CreateLaptop](./client/laptop_client.go)
+
+### Server Streaming RPC
+
+#### 如何定义
+
+需要在前面加关键字 **stream**
+
+```protobuf
+syntax = "proto3";
+option go_package = "./;pb";
+
+message SearchLaptopRequest {
+  Filter filter = 1;
+}
+
+message SearchLaptopResponse {
+ Laptop laptop = 1;
+}
+service LaptopService {
+  rpc SearchLaptop( SearchLaptopRequest) returns (stream SearchLaptopResponse) {};
+}
+```
+
+#### 代码实现
+
+server side 参考 [SearchLaptop](./service/laptop_server.go)
+
+client side 参考 [ SearchLaptop](./client/laptop_client.go)
+
+### Client Streaming RPC
+
+#### 如何定义
+
+```protobuf
+syntax = "proto3";
+option go_package = "./;pb";
+
+message UploadImageRequest {
+  oneof data {
+    ImageInfo info = 1;
+    bytes chunk_data = 2;
+  }
+}
+
+message ImageInfo {
+  string laptop_id = 1;
+  string image_type = 2;
+}
+
+message UploadImageResponse {
+  string id = 1;
+  uint32 size = 2;
+}
+service LaptopService {
+  rpc UploadImage(stream UploadImageRequest) returns (UploadImageResponse) {};
+}
+```
+
+#### 代码实现
+
+server side 参考 [UploadImage](./service/laptop_server.go)
+
+client side 参考 [ UploadImage](./client/laptop_client.go)
+
+### Bidirectional Streaming RPC
+
+#### 如何定义
+
+```protobuf
+syntax = "proto3";
+option go_package = "./;pb";
+
+message RateLaptopRequest {
+  string laptop_id = 1;
+  double score = 2;
+}
+
+message RateLaptopResponse {
+  string laptop_id = 1;
+  uint32 rated_count = 2;
+  double average_score = 3;
+}
+service LaptopService {
+  rpc RateLaptop(stream RateLaptopRequest) returns (stream RateLaptopResponse) {};
+}
+```
+
+#### 代码实现
+
+server side 参考 [RateLaptop](./service/laptop_server.go)
+
+client side 参考 [ RateLaptop](./client/laptop_client.go)
+
+## GRPC 的其他特性
+
+### Interceptor
+
+### Deadlines
+
+Deadlines 和 timeout 在分布式系统中，是常用的两种模式，它们都是用于控制程序和操作的操作时间，有不同的含义和应用场景
+
+#### deadlines
+
+指某个操作的最后期限或者截至时间，即操作必须在这个时间之前完成，否则会被取消或进行相应的处理。
+
+#### Timeout
+
+是执行某个操作的最长允许时间，超过这个时间就被会取消或者超时处理。
+
+#### 应用场景
+
+timeout 通常用于控制网络请求、IO读取或者其他超时处理的场景。比如 HTTP 客户端请求超时；deadline 用于需要明确指定操作截止时间的场景，比如分布式 RPC 调用，防止运行时间过长或停滞操作影响整个系统。
+
+#### 代码
+
+```go
+// client
+ctx, cancel := context.WithDeadline(context.Background(), 5*time.Second)
+	defer cancel()
+rsp, err := laptopClient.service.CreateLaptop(ctx, req)
+
+// server
+func (server *LaptopServer) CreateLaptop(ctx context.Context, req *pb.CreateLaptopRequest) (*pb.CreateLaptopResponse, error) {
+	...
+	//some heavy processsing
+	//time.Sleep(6 * time.Second)
+    if context.DeadlineExceeded == ctx.Err() {
+		return nil, err
+	}
+	...
+	return res, nil
+}
+```
+
+在 client 和 server 都可以独立的判断 RPC 是否成功，那么可能会导致他们之间的结论一致。当 client 已经 DeadlineExceeded 的时候，server 可能还在继续响应，所以需要在 server  加判断。
+
+### Cancellation
+
+### Error Handling
+
+当调用 gRPC 时，客户端会收到成功状态或者相对应的错误代码；gRPC 定义了一组 status Codes
+
+```go
+// A Code is an unsigned 32-bit error code as defined in the gRPC spec.
+type Code uint32
+
+const (
+	// OK is returned on success.
+	OK Code = 0
+
+	// Canceled indicates the operation was canceled (typically by the caller).
+	Canceled Code = 1
+
+	// Unknown error.
+	Unknown Code = 2
+
+	// InvalidArgument indicates client specified an invalid argument.
+	InvalidArgument Code = 3
+
+	// The deadline expired before the opteration could complete.
+	DeadlineExceeded Code = 4
+
+	// NotFound means some requested entity (e.g., file or directory) was not found.
+	NotFound Code = 5
+
+	// AlreadyExists means an attempt to create an entity failed because one already exists.
+	AlreadyExists Code = 6
+
+	// PermissionDenied indicates the caller does not have permission to execute the specified operation.
+	PermissionDenied Code = 7
+
+	// ResourceExhausted indicates some resource has been exhauste.
+	ResourceExhausted Code = 8
+
+	// FailedPrecondition indicates operation was rejected because the
+	// system is not in a state required for the operation's execution.
+	FailedPrecondition Code = 9
+
+	// Aborted indicates the operation was aborted, typically due to a
+	// concurrency issue like sequencer check failures, transaction aborts,
+	// etc.
+	Aborted Code = 10
+
+	// OutOfRange means operation was attempted past the valid range.
+	OutOfRange Code = 11
+
+	// Unimplemented indicates operation is not implemented or not supported/enabled in this service.
+	Unimplemented Code = 12
+
+	// Internal errors.
+	Internal Code = 13
+
+	// Unavailable indicates the service is currently unavailable.
+	Unavailable Code = 14
+
+	// DataLoss indicates unrecoverable data loss or corruption.
+	DataLoss Code = 15
+
+	// Unauthenticated indicates the request does not have valid
+	// authentication credentials for the operation.
+	Unauthenticated Code = 16
+
+	_maxCode = 17
+)
+```
+
+最主要就是 New()
+
+```go
+// New returns a Status representing c and msg.
+func New(c codes.Code, msg string) *Status {
+	return status.New(c, msg)
+}
+
+// Error returns an error representing c and msg.  If c is OK, returns nil.
+func Error(c codes.Code, msg string) error {
+	return New(c, msg).Err()
+}
+```
+
+
+
+### Multiplexing
+
+### Metadata
+
+### Load Balancing
+
+### TLS
