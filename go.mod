@@ -3,9 +3,11 @@ module github.com/liky
 go 1.20
 
 require (
+	github.com/dgrijalva/jwt-go v3.2.0+incompatible
 	github.com/google/uuid v1.5.0
 	github.com/jinzhu/copier v0.4.0
 	github.com/stretchr/testify v1.7.0
+	golang.org/x/crypto v0.0.0-20210817164053-32db794688a5
 	golang.org/x/exp v0.0.0-20200224162631-6cc2880d07d6
 	google.golang.org/grpc v1.36.1
 	google.golang.org/protobuf v1.27.1
@@ -16,7 +18,6 @@ require (
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/dgrijalva/jwt-go v3.2.0+incompatible // indirect
 	github.com/go-logr/logr v1.2.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
