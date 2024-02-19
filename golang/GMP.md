@@ -443,3 +443,173 @@ top:
 }
 ```
 
+1. p 每执行 61 次调度，会从全局队列中获取一个 goroutine 执行  
+
+```go
+if pp.schedtick%61 == 0 && sched.runqsize > 0 {
+	lock(&sched.lock)
+	gp := globrunqget(pp, 1)
+	unlock(&sched.lock)
+	if gp != nil {
+		return gp, false, false
+	}
+}
+```
+
+核心的代码就是 globrunqget()，得到的 goroutine 就是 min(1, sched.runqsize/gomaxprocs + 1,  sched.runqsize,  len(pp.runq)/2)
+
+- sched.runqsize 即全局队列长度
+- gomaxprocs 即 P 的数量
+- pp.runq 即 P 本地队列长度，256
+
+从代码可以看出，肯定能得到一个或者 没有
+
+2. 尝试从 p 本地队列中获取一个可执行的 goroutine，核心逻辑位于 runqget 方法中：
+
+```go
+// local runq
+if gp, inheritTime := runqget(pp); gp != nil {
+	return gp, inheritTime, false
+}
+```
+
+```go
+func runqget(pp *p) (gp *g, inheritTime bool) {
+	// If there's a runnext, it's the next G to run.
+	next := pp.runnext
+	// If the runnext is non-0 and the CAS fails, it could only have been stolen by another P,
+	// because other Ps can race to set runnext to 0, but only the current P can set it to non-0.
+	// Hence, there's no need to retry this CAS if it fails.
+	if next != 0 && pp.runnext.cas(next, 0) {
+		return next.ptr(), true
+	}
+
+	for {
+		h := atomic.LoadAcq(&pp.runqhead) // load-acquire, synchronize with other consumers
+		t := pp.runqtail
+		if t == h {
+			return nil, false
+		}
+		gp := pp.runq[h%uint32(len(pp.runq))].ptr()
+		if atomic.CasRel(&pp.runqhead, h, h+1) { // cas-release, commits consume
+			return gp, false
+		}
+	}
+}
+```
+
+> 1. 若当前 p 的 runnext 非空，直接获取
+>
+>    ```go
+>    if next != 0 && pp.runnext.cas(next, 0) {
+>    	return next.ptr(), true
+>    }
+>    ```
+>
+> 2. 加锁，从本地队列获取 g.   
+>
+>    本地队列是 p 独有，为什么需要加锁？因为有 work-stealing 机制的存在，其他 p 可能来窃取。
+>
+>    由于窃取频率不会太高，因此当前 p 取得锁成功率是很高的，因此可以说 p 的本地队列是接近于无锁化，但不是真正意义上的无锁。
+>
+>    ```go
+>    for {
+>    	h := atomic.LoadAcq(&pp.runqhead) // load-acquire, synchronize with other consumers
+>    	// ...
+>    }
+>    ```
+>
+> 3. 若本地队列为空，直接返回
+>
+>    ```go
+>    t := pp.runqtail
+>    if t == h {
+>    	return nil, false
+>    }
+>    ```
+>
+> 4. 若本地队列存在 g，则取得队首的 g，解锁并返回。
+>
+>    ```go
+>    gp := pp.runq[h%uint32(len(pp.runq))].ptr()
+>    if atomic.CasRel(&pp.runqhead, h, h+1) { // cas-release, commits consume
+>    	return gp, false
+>    }
+>    ```
+
+
+
+3. 若本地队列没有可执行的 g，会从全局队列获取：
+
+   ```go
+   if sched.runqsize != 0 {
+   	lock(&sched.lock)
+   	gp := globrunqget(pp, 0)
+   	unlock(&sched.lock)
+   	if gp != nil {
+   		return gp, false, false
+   	}
+   }
+   ```
+
+   加锁，尝试并从全局队列中取队首的元素，且把全局队列的 g ，放一些到 p 的本地队列中。
+
+   ```go
+   func globrunqget(pp *p, max int32) *g {
+   	assertLockHeld(&sched.lock)
+   
+   	if sched.runqsize == 0 {
+   		return nil
+   	}
+   
+   	n := sched.runqsize/gomaxprocs + 1
+   	if n > sched.runqsize {
+   		n = sched.runqsize
+   	}
+   	if max > 0 && n > max {
+   		n = max
+   	}
+   	if n > int32(len(pp.runq))/2 {
+   		n = int32(len(pp.runq)) / 2
+   	}
+   
+   	sched.runqsize -= n
+   
+   	gp := sched.runq.pop()
+   	n--
+   	for ; n > 0; n-- {
+   		gp1 := sched.runq.pop()
+   		runqput(pp, gp1, false)
+   	}
+   	return gp
+   }
+   ```
+
+   > 注意这里 max = 0，所以 放入 p 本地队列的数量是：min( sched.runqsize/gomaxprocs + 1,  sched.runqsize,  len(pp.runq)/2) -1
+
+   ![](../image/go/gmp_7.png)
+
+
+
+将一些 g 由全局队列转移到 本地队列的执行逻辑位于 runqput 方法中：
+
+```go
+func runqput(pp *p, gp *g, next bool) {
+
+    // 
+retry:
+	h := atomic.LoadAcq(&pp.runqhead) // load-acquire, synchronize with consumers
+	t := pp.runqtail
+	if t-h < uint32(len(pp.runq)) {
+		pp.runq[t%uint32(len(pp.runq))].set(gp)
+		atomic.StoreRel(&pp.runqtail, t+1) // store-release, makes the item available for consumption
+		return
+	}
+	if runqputslow(pp, gp, h, t) {
+		return
+	}
+	// the queue is not full, now the put above must succeed
+	goto retry
+}
+```
+
