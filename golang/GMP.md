@@ -633,7 +633,7 @@ retry:
 >    ```
 >    func runqputslow(pp *p, gp *g, h, t uint32) bool {
 >    	var batch [len(pp.runq)/2 + 1]*g
->    
+>       
 >    	// First, grab a batch from local queue.
 >    	n := t - h
 >    	n = n / 2
@@ -647,14 +647,14 @@ retry:
 >    		return false
 >    	}
 >    	batch[n] = gp
->    
+>       
 >    	if randomizeScheduler {
 >    		for i := uint32(1); i <= n; i++ {
 >    			j := fastrandn(i + 1)
 >    			batch[i], batch[j] = batch[j], batch[i]
 >    		}
 >    	}
->    
+>       
 >    	// Link the goroutines.
 >    	for i := uint32(0); i < n; i++ {
 >    		batch[i].schedlink.set(batch[i+1])
@@ -662,7 +662,7 @@ retry:
 >    	var q gQueue
 >    	q.head.set(batch[0])
 >    	q.tail.set(batch[n])
->    
+>       
 >    	// Now put the batch on global queue.
 >    	lock(&sched.lock)
 >    	globrunqputbatch(&q, int32(n+1))
@@ -787,9 +787,9 @@ retry:
    >    ```go
    >    n := t - h
    >    n = n - n/2
-   >    
+   >       
    >    //...
-   >    
+   >       
    >    for i := uint32(0); i < n; i++ {
    >    	g := pp.runq[(h+i)%uint32(len(pp.runq))]
    >    	batch[(batchHead+i)%uint32(len(batch))] = g
@@ -799,4 +799,107 @@ retry:
    >    }
    >    ```
 
+
+
+
+## 4.6 execute
+
+![](../image/go/gmp_9.png)
+
+当 g0 为 m 找到可执行的 g 之后，接下来就要执行 g. 代码位于 runtime/proc.go 的 execute 方法中：
+
+```go
+func execute(gp *g, inheritTime bool) {
+	mp := getg().m
+
+	// ...
+	mp.curg = gp
+	gp.m = mp
+	casgstatus(gp, _Grunnable, _Grunning)
+	gp.waitsince = 0
+	gp.preempt = false
+	gp.stackguard0 = gp.stack.lo + stackGuard
+	if !inheritTime {
+		mp.p.ptr().schedtick++
+	}
+
+	// ...
+
+	gogo(&gp.sched)
+}
+```
+
+1.  建立 g 与 m 之间的绑定，更新 g 的状态信息
+2. 更新 p 的总调度次数
+3. 调用 gogo 方法，执行 goroutine 中的任务
+
+
+
+## 4.7 gosched_m
+
+![](../image/go/gmp_10.png)
+
+g 执行主动让渡时，会调用 mcall 方法将执行权归还给 g0，并由 g0 调用 gosched_m 方法，代码位于 runtime/proc.go。
+
+```go
+func Gosched() {
+	checkTimeouts()
+	mcall(gosched_m)
+}
+```
+
+```go
+func gosched_m(gp *g) {
+	if traceEnabled() {
+		traceGoSched()
+	}
+	goschedImpl(gp)
+}
+
+func goschedImpl(gp *g) {
+	status := readgstatus(gp)
+	if status&^_Gscan != _Grunning {
+		dumpgstatus(gp)
+		throw("bad g status")
+	}
+	casgstatus(gp, _Grunning, _Grunnable)
+	dropg()
+	lock(&sched.lock)
+	globrunqput(gp)
+	unlock(&sched.lock)
+
+	schedule()
+}
+```
+
+1. 将当前 g 状态由 running 切换成 runnable
+
+   ```go
+   casgstatus(gp, _Grunning, _Grunnable)
+   ```
+
+2. 调用 dropg() 方法，将当前的 m 和 g 解绑
+
+   ```go
+   func dropg() {
+   	gp := getg()
    
+   	setMNoWB(&gp.m.curg.m, nil)
+   	setGNoWB(&gp.m.curg, nil)
+   }
+   ```
+
+3. 将 g 添加到全局队列
+
+   ```go
+   lock(&sched.lock)
+   globrunqput(gp)
+   unlock(&sched.lock)
+   ```
+
+4. 开启新一轮的调度
+
+   ```
+   schedule()
+   ```
+
