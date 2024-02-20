@@ -456,13 +456,9 @@ if pp.schedtick%61 == 0 && sched.runqsize > 0 {
 }
 ```
 
-核心的代码就是 globrunqget()，得到的 goroutine 就是 min(1, sched.runqsize/gomaxprocs + 1,  sched.runqsize,  len(pp.runq)/2)
+核心的代码就是 globrunqget()，得到一个 goroutine 或者没有。
 
-- sched.runqsize 即全局队列长度
-- gomaxprocs 即 P 的数量
-- pp.runq 即 P 本地队列长度，256
-
-从代码可以看出，肯定能得到一个或者 没有
+> 注意这里传参 max = 1
 
 2. 尝试从 p 本地队列中获取一个可执行的 goroutine，核心逻辑位于 runqget 方法中：
 
@@ -613,5 +609,194 @@ retry:
 }
 ```
 
+> 1.  取得本地队列队首的索引，同时对本地队列加锁：
+>
+>    ```go
+>    h := atomic.LoadAcq(&pp.runqhead)
+>    ```
+>
+> 2. 若本地队列没有满，则成功转移 g，将本地队列的尾索引 runqtail 加 1 并解锁
+>
+>    ```go
+>    t := pp.runqtail
+>    if t-h < uint32(len(pp.runq)) {
+>    	pp.runq[t%uint32(len(pp.runq))].set(gp)
+>    	atomic.StoreRel(&pp.runqtail, t+1) // store-release, makes the item available for consumption
+>    	return
+>    }
+>    ```
+>
+>    ![](../image/go/gmp_8.png)
+>
+> 3. 若本地队列已经满了，则会将一半的本地队列 g 放回到全局队列中，帮助当前 p 缓解执行压力，代码位于 runqputslow 中：
+>
+>    ```
+>    func runqputslow(pp *p, gp *g, h, t uint32) bool {
+>    	var batch [len(pp.runq)/2 + 1]*g
+>    
+>    	// First, grab a batch from local queue.
+>    	n := t - h
+>    	n = n / 2
+>    	if n != uint32(len(pp.runq)/2) {
+>    		throw("runqputslow: queue is not full")
+>    	}
+>    	for i := uint32(0); i < n; i++ {
+>    		batch[i] = pp.runq[(h+i)%uint32(len(pp.runq))].ptr()
+>    	}
+>    	if !atomic.CasRel(&pp.runqhead, h, h+n) { // cas-release, commits consume
+>    		return false
+>    	}
+>    	batch[n] = gp
+>    
+>    	if randomizeScheduler {
+>    		for i := uint32(1); i <= n; i++ {
+>    			j := fastrandn(i + 1)
+>    			batch[i], batch[j] = batch[j], batch[i]
+>    		}
+>    	}
+>    
+>    	// Link the goroutines.
+>    	for i := uint32(0); i < n; i++ {
+>    		batch[i].schedlink.set(batch[i+1])
+>    	}
+>    	var q gQueue
+>    	q.head.set(batch[0])
+>    	q.tail.set(batch[n])
+>    
+>    	// Now put the batch on global queue.
+>    	lock(&sched.lock)
+>    	globrunqputbatch(&q, int32(n+1))
+>    	unlock(&sched.lock)
+>    	return true
+>    }
+>    ```
 
-aaaa
+4. 若本地队列和全局队列都没有 g，则会从 网络就绪的 goroutine 中获取。
+
+   ```go
+   if netpollinited() && netpollWaiters.Load() > 0 && sched.lastpoll.Load() != 0 {
+   	if list := netpoll(0); !list.empty() { // non-blocking
+   		gp := list.pop()
+   		injectglist(&list)
+   		casgstatus(gp, _Gwaiting, _Grunnable)
+   		if traceEnabled() {
+   			traceGoUnpark(gp, 0)
+   		}
+   		return gp, false, false
+   	}
+   }
+   ```
+
+   将 g 的状态从 waiting 改成 runnable
+
+5. 若还没有，就会从其他 p 窃取，work-stealing
+
+   ```go
+   gp, inheritTime, tnow, w, newWork := stealWork(now)
+   ```
+
+   ```go
+   func stealWork(now int64) (gp *g, inheritTime bool, rnow, pollUntil int64, newWork bool) {
+   	pp := getg().m.p.ptr()
+   
+   	ranTimer := false
+   
+   	const stealTries = 4
+   	for i := 0; i < stealTries; i++ {
+   		stealTimersOrRunNextG := i == stealTries-1
+   
+   		for enum := stealOrder.start(fastrand()); !enum.done(); enum.next() {
+               
+   			//...
+               
+   			if !idlepMask.read(enum.position()) {
+   				if gp := runqsteal(pp, p2, stealTimersOrRunNextG); gp != nil {
+   					return gp, false, now, pollUntil, ranTimer
+   				}
+   			}
+   		}
+   	}
+   	return nil, false, now, pollUntil, ranTimer
+   }
+   ```
+
+   偷取操作至多会遍历全局的 p 队列 4 次，过程中只要找到可窃取的 p 则会立即返回.
+
+   为保证窃取行为的公平性，遍历的起点是随机的. 窃取代码位于 runqsteal 方法当中：
+
+   ```go
+   func runqsteal(pp, p2 *p, stealRunNextG bool) *g {
+   	t := pp.runqtail
+   	n := runqgrab(p2, &pp.runq, t, stealRunNextG)
+   	// ...
+   }
+   ```
+
+   ```go
+   func runqgrab(pp *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool) uint32 {
+   	for {
+   		h := atomic.LoadAcq(&pp.runqhead) // load-acquire, synchronize with other consumers
+   		t := atomic.LoadAcq(&pp.runqtail) // load-acquire, synchronize with the producer
+   		n := t - h
+   		n = n - n/2
+   		if n == 0 {
+   			if stealRunNextG {
+   				// Try to steal from pp.runnext.
+   				if next := pp.runnext; next != 0 {
+   					if pp.status == _Prunning {
+   						// ...
+   						if GOOS != "windows" && GOOS != "openbsd" && GOOS != "netbsd" {
+   							usleep(3)
+   						} else {
+   							// ...
+   							osyield()
+   						}
+   					}
+   					if !pp.runnext.cas(next, 0) {
+   						continue
+   					}
+   					batch[batchHead%uint32(len(batch))] = next
+   					return 1
+   				}
+   			}
+   			return 0
+   		}
+   		if n > uint32(len(pp.runq)/2) { // read inconsistent h and t
+   			continue
+   		}
+   		for i := uint32(0); i < n; i++ {
+   			g := pp.runq[(h+i)%uint32(len(pp.runq))]
+   			batch[(batchHead+i)%uint32(len(batch))] = g
+   		}
+   		if atomic.CasRel(&pp.runqhead, h, h+n) { // cas-release, commits consume
+   			return n
+   		}
+   	}
+   }
+   ```
+
+   > 1. 每次对一个 p 尝试窃取前，会对队首队尾部加锁；
+   >
+   >    ```go
+   >    h := atomic.LoadAcq(&pp.runqhead) // load-acquire, synchronize with other consumers
+   >    t := atomic.LoadAcq(&pp.runqtail) // load-acquire, synchronize with the producer
+   >    ```
+   >
+   > 2. 尝试偷取其现有的一半 g，并且返回实际偷取的数量.
+   >
+   >    ```go
+   >    n := t - h
+   >    n = n - n/2
+   >    
+   >    //...
+   >    
+   >    for i := uint32(0); i < n; i++ {
+   >    	g := pp.runq[(h+i)%uint32(len(pp.runq))]
+   >    	batch[(batchHead+i)%uint32(len(batch))] = g
+   >    }
+   >    if atomic.CasRel(&pp.runqhead, h, h+n) { // cas-release, commits consume
+   >    	return n
+   >    }
+   >    ```
+
+   
