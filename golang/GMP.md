@@ -355,6 +355,12 @@ schedule 函数处理具体的调度策略，选择下一个要执行的协程�
 
 ## 4.5 findRunnable
 
+![](../image/go/gmp_11.png)
+
+调度流程中，为 m 找到下一个执行的 g ，代码位于 runtime/proc.go 的 findRunnable 方法中：
+
+
+
 ```go
 // Finds a runnable goroutine to execute.
 // Tries to steal from other P's, get g from local or global queue, poll network.
@@ -633,7 +639,7 @@ retry:
 >    ```
 >    func runqputslow(pp *p, gp *g, h, t uint32) bool {
 >    	var batch [len(pp.runq)/2 + 1]*g
->       
+>          
 >    	// First, grab a batch from local queue.
 >    	n := t - h
 >    	n = n / 2
@@ -647,14 +653,14 @@ retry:
 >    		return false
 >    	}
 >    	batch[n] = gp
->       
+>          
 >    	if randomizeScheduler {
 >    		for i := uint32(1); i <= n; i++ {
 >    			j := fastrandn(i + 1)
 >    			batch[i], batch[j] = batch[j], batch[i]
 >    		}
 >    	}
->       
+>          
 >    	// Link the goroutines.
 >    	for i := uint32(0); i < n; i++ {
 >    		batch[i].schedlink.set(batch[i+1])
@@ -662,7 +668,7 @@ retry:
 >    	var q gQueue
 >    	q.head.set(batch[0])
 >    	q.tail.set(batch[n])
->       
+>          
 >    	// Now put the batch on global queue.
 >    	lock(&sched.lock)
 >    	globrunqputbatch(&q, int32(n+1))
@@ -787,9 +793,9 @@ retry:
    >    ```go
    >    n := t - h
    >    n = n - n/2
-   >       
+   >          
    >    //...
-   >       
+   >          
    >    for i := uint32(0); i < n; i++ {
    >    	g := pp.runq[(h+i)%uint32(len(pp.runq))]
    >    	batch[(batchHead+i)%uint32(len(batch))] = g
