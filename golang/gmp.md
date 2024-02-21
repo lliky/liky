@@ -639,7 +639,7 @@ retry:
 >    ```
 >    func runqputslow(pp *p, gp *g, h, t uint32) bool {
 >    	var batch [len(pp.runq)/2 + 1]*g
->          
+>             
 >    	// First, grab a batch from local queue.
 >    	n := t - h
 >    	n = n / 2
@@ -653,14 +653,14 @@ retry:
 >    		return false
 >    	}
 >    	batch[n] = gp
->          
+>             
 >    	if randomizeScheduler {
 >    		for i := uint32(1); i <= n; i++ {
 >    			j := fastrandn(i + 1)
 >    			batch[i], batch[j] = batch[j], batch[i]
 >    		}
 >    	}
->          
+>             
 >    	// Link the goroutines.
 >    	for i := uint32(0); i < n; i++ {
 >    		batch[i].schedlink.set(batch[i+1])
@@ -668,7 +668,7 @@ retry:
 >    	var q gQueue
 >    	q.head.set(batch[0])
 >    	q.tail.set(batch[n])
->          
+>             
 >    	// Now put the batch on global queue.
 >    	lock(&sched.lock)
 >    	globrunqputbatch(&q, int32(n+1))
@@ -793,9 +793,9 @@ retry:
    >    ```go
    >    n := t - h
    >    n = n - n/2
-   >          
+   >             
    >    //...
-   >          
+   >             
    >    for i := uint32(0); i < n; i++ {
    >    	g := pp.runq[(h+i)%uint32(len(pp.runq))]
    >    	batch[(batchHead+i)%uint32(len(batch))] = g
@@ -908,4 +908,152 @@ func goschedImpl(gp *g) {
    ```
    schedule()
    ```
+
+
+
+## 4.8 park_m 与 goready
+
+g 需要被动调度时，会调用 mcall 方法切换至 g0，并调用 park_m 方法将 g 置为阻塞态，代码位于 runtime/proc.go 的 gopark 方法中。
+
+![](../image/go/gmp_12.png)
+
+```go
+func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason waitReason, traceReason traceBlockReason, traceskip int) {
+	// ...
+	mcall(park_m)
+}
+```
+
+```go
+func park_m(gp *g) {
+	mp := getg().m
+
+	casgstatus(gp, _Grunning, _Gwaiting)
+	dropg()
+
+	// ...
+	schedule()
+}
+```
+
+1. 将当前 g 的状态由 running 改为 waiting；
+2. 将 g 与 m 解绑；
+3. 开启新一轮调度。
+
+因被动调度陷入阻塞态的 g 需要被唤醒时，会由其他协程执行 goready 方法将 g 重新置为可执行的状态，代码位于 runtime/proc.go。
+
+被动调度如果需要被唤醒，则会其他 g 负责将 g 的状态由 waiting 更新为 runnable，然后会将其添加到唤醒者的 p 的本地队列中：
+
+```go
+func goready(gp *g, traceskip int) {
+	systemstack(func() {
+		ready(gp, traceskip, true)
+	})
+}
+```
+
+```go
+func ready(gp *g, traceskip int, next bool) {
+	//...
+
+	status := readgstatus(gp)
+
+	// Mark runnable.
+	mp := acquirem() // disable preemption because it can be holding p in a local var
+	if status&^_Gscan != _Gwaiting {
+		dumpgstatus(gp)
+		throw("bad g->status in ready")
+	}
+
+	// status is Gwaiting or Gscanwaiting, make Grunnable and put on runq
+	casgstatus(gp, _Gwaiting, _Grunnable)
+	runqput(mp.p.ptr(), gp, next)
+	wakep()
+	releasem(mp)
+}
+```
+
+1. 先将 g 状态从阻塞态更新为可执行态；
+2. 调用 runqget 将当前 g 添加到唤醒者的本地队列，如果队列满了，会连带 g 将一半的 g 添加到全局队列中。
+
+
+
+## 4.9 goexit0
+
+正常调度执行完成
+
+![](../image/go/gmp_13.png)
+
+当 g 执行完成时，会先执行 mcall 方法切换至 g0，然后调用 goexit0 方法，代码位于 runtime/proc.go：
+
+```go
+func goexit1() {
+
+	// ...
+	
+	mcall(goexit0)
+}
+```
+
+```go
+func goexit0(gp *g) {
+	mp := getg().m
+	pp := mp.p.ptr()
+
+	casgstatus(gp, _Grunning, _Gdead)
+
+	// ...
+
+	dropg()
+
+    // ...
+    
+	gfput(pp, gp)
+    
+	//...
+    
+	schedule()
+}
+```
+
+1. 将 g 的状态从 running 更新为 dead；
+
+2. 解绑 g 与 m
+
+3. 将 g 加到 p 的本地 gFree 队列或者全局 gFree 队列
+
+   ```go
+   func gfput(pp *p, gp *g) {
+   	// ...
+   
+   	pp.gFree.push(gp)
+   	pp.gFree.n++
+   	if pp.gFree.n >= 64 {
+   		var (
+   			inc      int32
+   			stackQ   gQueue
+   			noStackQ gQueue
+   		)
+   		for pp.gFree.n >= 32 {
+   			gp := pp.gFree.pop()
+   			pp.gFree.n--
+   			if gp.stack.lo == 0 {
+   				noStackQ.push(gp)
+   			} else {
+   				stackQ.push(gp)
+   			}
+   			inc++
+   		}
+   		lock(&sched.gFree.lock)
+   		sched.gFree.noStack.pushAll(noStackQ)
+   		sched.gFree.stack.pushAll(stackQ)
+   		sched.gFree.n += inc
+   		unlock(&sched.gFree.lock)
+   	}
+   }
+   ```
+
+   如果 p 的本地 gFree 队列大于 64，就会把一半的 g 转移到 全局 gFree 队列里面。
+
+4. 进行新一轮调度
 
