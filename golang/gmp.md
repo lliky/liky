@@ -1312,7 +1312,26 @@ if s == _Psyscall {
    - 全局队列有 g
    - 处理网络读写事件
 
+   获取 m 时，会先尝试获取已有的空闲的 m，若不存在，则会创建一个新的 m.
+
    ```go
+   func startm(pp *p, spinning, lockheld bool) {
+   	mp := acquirem()
+       
+   	// ... 
+       
+   	nmp := mget()
+   	if nmp == nil {
+           
+   		// ...
+           
+   		newm(fn, pp, id)
+   
+   		// ...
+   		return
+   	}
+   	// ...
+   }
    ```
 
    
@@ -1323,4 +1342,12 @@ if s == _Psyscall {
    pidleput(pp, 0)
    ```
 
-   
+
+
+## 4.11 reentersyscall 和 exitsyscall
+
+线程的 p 被抢占后，，系统调用的线程从内核返回后会怎么样？在系统调用前后执行了一些系列逻辑：
+
+- 之前：reentersyscall 
+- 之后：exitsyscall
+
