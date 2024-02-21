@@ -639,7 +639,7 @@ retry:
 >    ```
 >    func runqputslow(pp *p, gp *g, h, t uint32) bool {
 >    	var batch [len(pp.runq)/2 + 1]*g
->             
+>                
 >    	// First, grab a batch from local queue.
 >    	n := t - h
 >    	n = n / 2
@@ -653,14 +653,14 @@ retry:
 >    		return false
 >    	}
 >    	batch[n] = gp
->             
+>                
 >    	if randomizeScheduler {
 >    		for i := uint32(1); i <= n; i++ {
 >    			j := fastrandn(i + 1)
 >    			batch[i], batch[j] = batch[j], batch[i]
 >    		}
 >    	}
->             
+>                
 >    	// Link the goroutines.
 >    	for i := uint32(0); i < n; i++ {
 >    		batch[i].schedlink.set(batch[i+1])
@@ -668,7 +668,7 @@ retry:
 >    	var q gQueue
 >    	q.head.set(batch[0])
 >    	q.tail.set(batch[n])
->             
+>                
 >    	// Now put the batch on global queue.
 >    	lock(&sched.lock)
 >    	globrunqputbatch(&q, int32(n+1))
@@ -793,9 +793,9 @@ retry:
    >    ```go
    >    n := t - h
    >    n = n - n/2
-   >             
+   >                
    >    //...
-   >             
+   >                
    >    for i := uint32(0); i < n; i++ {
    >    	g := pp.runq[(h+i)%uint32(len(pp.runq))]
    >    	batch[(batchHead+i)%uint32(len(batch))] = g
@@ -1057,3 +1057,270 @@ func goexit0(gp *g) {
 
 4. 进行新一轮调度
 
+
+
+## 4.10 retake
+
+
+
+与 4.7 - 4.9 不同的是，抢占调度的执行者不是 g0，而是一个全局的 monitor g，它是独立运行在 M 上面的，不需要绑定 p，会判断当前协程是否运行时间过长，或者处于系统调用阶段，如果是，则会抢占当前 g 的执行。代码位于 runtime/proc.go 的 retake 函数中：
+
+```go
+func retake(now int64) uint32 {
+	// 遍历所有 p
+	for i := 0; i < len(allp); i++ {
+		pp := allp[i]
+		pd := &pp.sysmontick
+		s := pp.status
+		sysretake := false
+		if s == _Prunning || s == _Psyscall {
+			// 如果 g 运行时间过长，则抢占
+			t := int64(pp.schedtick)
+			if int64(pd.schedtick) != t {
+				pd.schedtick = uint32(t)
+				pd.schedwhen = now
+			} else if pd.schedwhen+forcePreemptNS <= now {
+                // 连续运行时间超过 10ms，设置抢占请求
+				preemptone(pp)
+				// In case of syscall, preemptone() doesn't
+				// work, because there is no M wired to P.
+				sysretake = true
+			}
+		}
+		if s == _Psyscall {
+			// P 处于系统调用，检查是否需要抢占
+		}
+	}
+	// ...
+}
+```
+
+### 4.10.1  执行时间过长抢占
+
+调度发生的时机主要是在执行函数调用阶段，编译器会在函数调用前判断 stackguard0 的大小，判断是 g 是否被抢占，调用流程:
+
+morestack_noctxt()→morestack()→newstack(),  morestack_noctxt 为汇编函数，newstatck()  会调用 gopreempt_m 切换到 g0，取消G与M之间的绑定关系，将 g 的状态转换为  runnable，将 g 放入全局运行队列，并调用 schedule 函数开始新一轮调度循环。
+
+```
+func newstack() {
+	preempt := stackguard0 == stackPreempt
+	if preempt {
+		//...
+		gopreempt_m(gp) // never return
+	}
+}
+```
+
+有种情况是 g 在执行过程中，没有函数调用，所以没有抢占机会，那么就有了 信号强制抢占机制。
+
+go 在初始化时会初始化信号表，并注册信号处理函数。调度器通过向线程发送 sigPreempt ，触发信号处理。
+
+```go
+func preemptone(pp *p) bool {
+    // ...
+    gp.preempt = true
+    gp.stackguard0 = stackPreempt
+	if preemptMSupported && debug.asyncpreemptoff == 0 {
+		pp.preempt = true
+		preemptM(mp)
+	}
+
+	return true
+}
+```
+
+1. 设置抢占标志
+
+   ```go
+   gp.preempt = true
+   gp.stackguard0 = stackPreempt
+   ```
+
+2. 调度器通过向线程中发送 sigPreempt 信号，触发信号处理
+
+   ![](../image/go/gmp_14.png)
+
+   ```go
+   func preemptM(mp *m) {
+   	// ...
+   	signalM(mp, sigPreempt)
+   	// ...
+   }
+   ```
+
+   信号处理逻辑位于 runtime/signal_unix.go 的 sighandler：
+
+   信号处理时，遇到 sigPreemt 信号，触发异步抢占机制。
+
+   ```go
+   func sighandler(sig uint32, info *siginfo, ctxt unsafe.Pointer, gp *g) {
+   	// ...
+   	if sig == sigPreempt && debug.asyncpreemptoff == 0 && !delayedSignal {
+   		doSigPreempt(gp, c)
+   	}
+   	// ...
+   }
+   ```
+
+   doSigPreempt函数是平台相关的汇编函数，修改原程序中rsp、rip寄存器中的值，从而在从内核态返回后，执行新的函数路径。
+
+   在Go语言中，内核返回后执行新的 asyncPreempt 函数。asyncPreempt 函数会保存当前程序的寄存器值，并调用 asyncPreempt2 函数。重新切换回 g0 开始新的一轮调度，从而打断密集循环的继续执行。
+
+   ```go
+   // asyncPreempt is implemented in assembly.
+   func asyncPreempt()
+   
+   //go:nosplit
+   func asyncPreempt2() {
+   	gp := getg()
+   	gp.asyncSafePoint = true
+   	if gp.preemptStop {
+   		mcall(preemptPark)
+   	} else {
+   		mcall(gopreempt_m)
+   	}
+   	gp.asyncSafePoint = false
+   }
+   ```
+
+
+
+### 4.10.2 系统调用时抢占
+
+```go
+if s == _Psyscall {
+	// Retake P from syscall if it's there for more than 1 sysmon tick (at least 20us).
+	t := int64(pp.syscalltick)
+	if !sysretake && int64(pd.syscalltick) != t {
+		pd.syscalltick = uint32(t)
+		pd.syscallwhen = now
+		continue
+	}
+	
+	if runqempty(pp) && sched.nmspinning.Load()+sched.npidle.Load() > 0 && pd.syscallwhen+10*1000*1000 > now {
+		continue
+	}
+	unlock(&allpLock)
+	incidlelocked(-1)
+	if atomic.Cas(&pp.status, s, _Pidle) {
+		if traceEnabled() {
+			traceGoSysBlock(pp)
+			traceProcStop(pp)
+		}
+		n++
+		pp.syscalltick++
+		handoffp(pp)
+	}
+	incidlelocked(1)
+	lock(&allpLock)
+}
+```
+
+1. 系统调用超过一个 sysmon tick ( 20 us) 就会发生抢占
+
+   ```go
+   t := int64(pp.syscalltick)
+   if !sysretake && int64(pd.syscalltick) != t {
+   	pd.syscalltick = uint32(t)
+   	pd.syscallwhen = now
+   	continue
+   }
+   ```
+
+2. p 满足下面下面三种之一就会发生抢占
+
+   ```go
+   if runqempty(pp) && sched.nmspinning.Load()+sched.npidle.Load() > 0 && pd.syscallwhen+10*1000*1000 > now {
+   	continue
+   }
+   ```
+
+   1. 当前局部队列有等待运行的 g；
+   2. 前期没有空闲的 p 和 自旋的 m；
+   3. 当前系统调用时间超过 10ms
+
+3. 抢占调度步骤，先将当前 p 的状态更新为 idle，然后进入 handoffp 函数，判断是否需要新的 m  去接管 p （因为原本和 p 绑定的 m 正在执行系统调用）：
+
+   ```go
+   if atomic.Cas(&pp.status, s, _Pidle) {
+   	if traceEnabled() {
+   		traceGoSysBlock(pp)
+   		traceProcStop(pp)
+   	}
+   	n++
+   	pp.syscalltick++
+   	handoffp(pp)
+   }
+   ```
+
+4. 当发生如下条件时，需要启动一个 m 来接管：
+
+   ```go
+   func handoffp(pp *p) {
+   	
+   	// if it has local work, start it straight away
+   	if !runqempty(pp) || sched.runqsize != 0 {
+   		startm(pp, false, false)
+   		return
+   	}
+   	// if there's trace work to do, start it straight away
+   	if (traceEnabled() || traceShuttingDown()) && traceReaderAvailable() != nil {
+   		startm(pp, false, false)
+   		return
+   	}
+   	// if it has GC work, start it straight away
+   	if gcBlackenEnabled != 0 && gcMarkWorkAvailable(pp) {
+   		startm(pp, false, false)
+   		return
+   	}
+   	// no local work, check that there are no spinning/idle M's,
+   	// otherwise our help is not required
+   	if sched.nmspinning.Load()+sched.npidle.Load() == 0 && sched.nmspinning.CompareAndSwap(0, 1) { // TODO: fast atomic
+   		sched.needspinning.Store(0)
+   		startm(pp, true, false)
+   		return
+   	}
+   	if sched.runqsize != 0 {
+   		unlock(&sched.lock)
+   		startm(pp, false, false)
+   		return
+   	}
+   	// If this is the last running P and nobody is polling network,
+   	// need to wakeup another M to poll network.
+   	if sched.npidle.Load() == gomaxprocs-1 && sched.lastpoll.Load() != 0 {
+   		unlock(&sched.lock)
+   		startm(pp, false, false)
+   		return
+   	}
+   
+   	// The scheduler lock cannot be held when calling wakeNetPoller below
+   	// because wakeNetPoller may call wakep which may call startm.
+   	when := nobarrierWakeTime(pp)
+   	pidleput(pp, 0)
+   	unlock(&sched.lock)
+   
+   	if when != 0 {
+   		wakeNetPoller(when)
+   	}
+   }
+   ```
+
+   - 本地队列或者全局队列有 g
+   - 有 trace 任务
+   - 有垃圾回收任务
+   - 所有其他 p 都在运行 g 并且没有自选的 m
+   - 全局队列有 g
+   - 处理网络读写事件
+
+   ```go
+   ```
+
+   
+
+   如果上述条件不满足，会将 p 放到空闲队列中
+
+   ```go
+   pidleput(pp, 0)
+   ```
+
+   
