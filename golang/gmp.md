@@ -639,7 +639,7 @@ retry:
 >    ```
 >    func runqputslow(pp *p, gp *g, h, t uint32) bool {
 >    	var batch [len(pp.runq)/2 + 1]*g
->                
+>                   
 >    	// First, grab a batch from local queue.
 >    	n := t - h
 >    	n = n / 2
@@ -653,14 +653,14 @@ retry:
 >    		return false
 >    	}
 >    	batch[n] = gp
->                
+>                   
 >    	if randomizeScheduler {
 >    		for i := uint32(1); i <= n; i++ {
 >    			j := fastrandn(i + 1)
 >    			batch[i], batch[j] = batch[j], batch[i]
 >    		}
 >    	}
->                
+>                   
 >    	// Link the goroutines.
 >    	for i := uint32(0); i < n; i++ {
 >    		batch[i].schedlink.set(batch[i+1])
@@ -668,7 +668,7 @@ retry:
 >    	var q gQueue
 >    	q.head.set(batch[0])
 >    	q.tail.set(batch[n])
->                
+>                   
 >    	// Now put the batch on global queue.
 >    	lock(&sched.lock)
 >    	globrunqputbatch(&q, int32(n+1))
@@ -793,9 +793,9 @@ retry:
    >    ```go
    >    n := t - h
    >    n = n - n/2
-   >                
+   >                   
    >    //...
-   >                
+   >                   
    >    for i := uint32(0); i < n; i++ {
    >    	g := pp.runq[(h+i)%uint32(len(pp.runq))]
    >    	batch[(batchHead+i)%uint32(len(batch))] = g
@@ -1061,7 +1061,7 @@ func goexit0(gp *g) {
 
 ## 4.10 retake
 
-
+![](../image/go/gmp_15.png)
 
 与 4.7 - 4.9 不同的是，抢占调度的执行者不是 g0，而是一个全局的 monitor g，它是独立运行在 M 上面的，不需要绑定 p，会判断当前协程是否运行时间过长，或者处于系统调用阶段，如果是，则会抢占当前 g 的执行。代码位于 runtime/proc.go 的 retake 函数中：
 
@@ -1351,3 +1351,189 @@ if s == _Psyscall {
 - 之前：reentersyscall 
 - 之后：exitsyscall
 
+代码都位于 runtime/proc.go
+
+
+
+### 4.11.1 reentersyscall
+
+在 m 执行系统调用之前，会先执行 reentersyscall 函数：
+
+```go
+func reentersyscall(pc, sp uintptr) {
+	gp := getg()
+
+	// ...
+	
+	save(pc, sp)
+	gp.syscallsp = sp
+	gp.syscallpc = pc
+	casgstatus(gp, _Grunning, _Gsyscall)
+	
+	// ...
+	
+	gp.m.syscalltick = gp.m.p.ptr().syscalltick
+	pp := gp.m.p.ptr()
+	pp.m = 0
+	gp.m.oldp.set(pp)
+	gp.m.p = 0
+	atomic.Store(&pp.status, _Psyscall)
+
+	gp.m.locks--
+}
+```
+
+1. 此时执行权还是在 m 的 g0 手中
+
+2. 保存当前 g 的执行环境
+
+   ```go
+   save(pc, sp)
+   gp.syscallsp = sp
+   gp.syscallpc = pc
+   ```
+
+3. 将 p 和 g 状态更新
+
+   ```go
+   casgstatus(gp, _Grunning, _Gsyscall)
+   atomic.Store(&pp.status, _Psyscall)
+   ```
+
+4. 解除 p 和 m 之间的 绑定
+
+   ```go
+   pp := gp.m.p.ptr()
+   pp.m = 0
+   gp.m.p = 0
+   ```
+
+5. 将 p 添加到 当前 m 的 oldP 容器当中，后续 m 恢复后，会优先寻找旧的 p 重新建立绑定关系
+
+   ```
+   gp.m.oldp.set(pp)
+   ```
+
+
+
+### 4.11.2 exitsyscall
+
+当 m 完成系统调用之后，会执行 exitsyscall 函数，尝试寻找 p 重新开始运作：
+
+``` go
+func exitsyscall() {
+	gp := getg()
+
+	// ...
+	oldp := gp.m.oldp.ptr()
+	gp.m.oldp = 0
+	if exitsyscallfast(oldp) {
+		
+		// ...
+		
+		casgstatus(gp, _Gsyscall, _Grunning)
+		
+		// ...
+
+		return
+	}
+
+	// ...
+	mcall(exitsyscall0)
+
+	// ...
+}
+```
+
+1. 此时的执行权是普通的 g
+
+2. 若之前设置的 oldp 可用，则重新 和 odlp 绑定，将当前  g 的状态从 syscall 更新为 running ,然后开始执行后续的用户函数
+
+   ```go
+   gp := getg()
+   
+   // ...
+   oldp := gp.m.oldp.ptr()
+   gp.m.oldp = 0
+   if exitsyscallfast(oldp) {
+   		
+   	// ...
+   		
+   	casgstatus(gp, _Gsyscall, _Grunning)
+   		
+   	// ...
+   
+   	return
+   }
+   ```
+
+3. old p 绑定失败，则调用  mcall() 函数切换到 m 的 g0，执行 exitsyscall0 函数
+
+   ```go
+   mcall(exitsyscall0)
+   ```
+
+   ```go
+   func exitsyscall0(gp *g) {
+   	casgstatus(gp, _Gsyscall, _Grunnable)
+   	dropg()
+   	lock(&sched.lock)
+   	var pp *p
+   	if schedEnabled(gp) {
+   		pp, _ = pidleget(0)
+   	}
+   	var locked bool
+   	if pp == nil {
+   		globrunqput(gp)
+   	} 
+   	
+   	// ...
+   	
+   	if pp != nil {
+   		acquirep(pp)
+   		execute(gp, false) // Never returns.
+   	}
+   	
+   	// ...
+   	
+   	stopm()
+   	schedule() // Never returns.
+   }
+   ```
+
+4. 将 g 的状态由 syscall 更新为 runnable，并且 m 与 g 解绑
+
+   ```go
+   casgstatus(gp, _Gsyscall, _Grunnable)
+   dropg()
+   ```
+
+5. 从全局 p 队列获取 p，若得到 p ，则执行 g
+
+   ```go
+   if schedEnabled(gp) {
+   	pp, _ = pidleget(0)
+   }
+   if pp != nil {
+   	acquirep(pp)
+   	execute(gp, false) // Never returns.
+   }
+   ```
+
+6. 若没 p 可用，则将 g 加入到全局队列中，当前 m 陷入沉睡. 直到被唤醒后才会继续发起调度
+
+   ```go
+   if pp == nil {
+   	globrunqput(gp)
+   }
+   stopm()
+   schedule() // Never returns.
+   ```
+
+
+
+# 参考
+
+Go 语言底层原理剖析
+
+https://www.bilibili.com/video/BV1oT411Y7m3/?spm_id_from=333.999.0.0
