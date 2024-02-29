@@ -6,6 +6,8 @@ goversion:  go1.21.6
 
 # 1. 核心数据结构
 
+![](../image/go/chan_1.png)
+
 ## 1.1 hchan
 
 ```go
@@ -84,6 +86,8 @@ sudog：包装 g 的结构体
 * c：标识与当前 sudog 交互的 chan
 
 # 2 chan 初始化
+
+![](..//image/go/chan_2.png)
 
 ```go
 func makechan(t *chantype, size int) *hchan {
