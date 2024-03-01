@@ -174,6 +174,8 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 
 ## 3.2 case1 写时存在阻塞读协程
 
+![](../image/go/chan_3.png)
+
 ```go
 func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 
@@ -216,6 +218,8 @@ func send(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 
 ## 3.3 case2 写时无阻塞读队列，环形数组有空间
 
+![](../image/go/chan_4.png)
+
 ```go
 func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 
@@ -249,6 +253,8 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 * 解锁
 
 ## 3.4 case3 写时无阻塞队列，环形数组无空间
+
+![](../image/go/chan_5.png)
 
 ```go
 func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
@@ -299,7 +305,7 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 * goroutine 被唤醒有两种可能：
   * 取走数据，succees = true
   * chan 关闭， success = false
-* 解锁，返回，应该在 gopark 做的？？
+* 解锁，返回
 
 
 
