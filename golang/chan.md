@@ -361,6 +361,8 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 
 ## 4.3 读时有阻塞的写协程
 
+![](./../image/go/chan_6.png)
+
 ```go
 func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool) {
     
@@ -463,6 +465,8 @@ func recv(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 
 ## 4.4 case4 读时无阻塞写协程，缓冲区有元素
 
+![](./../image/go/chan_7.png)
+
 ```go
 func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool) {
     
@@ -497,6 +501,8 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 
 
 ## 4.5 case5 读时无阻塞写协程，缓冲区无元素
+
+![](./../image/go/chan_8.png)
 
 ```go
 func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool) {
@@ -643,6 +649,8 @@ func chanrecv2(c *hchan, elem unsafe.Pointer) (received bool) {
 
 
 # 7 关闭 chan
+
+![](./../image/go/chan_9.png)
 
 ```go
 func closechan(c *hchan) {
