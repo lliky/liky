@@ -464,3 +464,121 @@ mcache、mcentral、mheap
 
 ## 3.2 主干方法 mallocgc
 
+
+
+## 3.3 步骤 1 tiny 分配
+
+每个 P 独有的 mcache 会有个微对象分配器，基于 offset 线性移动的方式对微对象进行分配，每个 16B 成块，对象依据其大小，会向上取整为 2 的整数次幂进行补齐，然后进入分配流程。
+
+![tiny allocator](../image/go/memory/memory_13.png). 
+
+```go
+off := c.tinyoffset
+
+if size&7 == 0 {
+		off = alignUp(off, 8)
+} else if size&3 == 0 {
+		off = alignUp(off, 4)
+} else if size&1 == 0 {
+	off = alignUp(off, 2)
+}
+```
+
+```go
+noscan := typ == nil || typ.PtrBytes == 0
+// ...
+if noscan && size < maxTinySize {
+  	// tiny 内存块，从 offset 之后开始找
+  	off := c.tinyoffset
+		// ...
+  	// 如果当前 tiny 内存块空间还够用，则直接分配并返回
+		if off+size <= maxTinySize && c.tiny != 0 {
+				// 分配空间
+				x = unsafe.Pointer(c.tiny + off)
+				c.tinyoffset = off + size
+				c.tinyAllocs++
+				mp.mallocing = 0
+				releasem(mp)
+				return x
+			}
+  	// ...
+}
+```
+
+
+
+## 3.4 步骤 2 mcahce 分配
+
+```go
+	var sizeclass uint8
+	// 根据对象大小，映射到其所属的 span 的等级（0-67）
+	size = uintptr(class_to_size[sizeclass])
+	spc := makeSpanClass(sizeclass, noscan)
+	// 获取 mcache 中的 span
+	span = c.alloc[spc]
+	// 从 mcache 的 span 中尝试获取空间
+	v := nextFreeFast(span)
+	if v == 0 {
+    	// mcache 分配空间失败，则通过 mcentral, mheap 兜底
+			v, span, shouldhelpgc = c.nextFree(spc)
+	}
+	// 分配空间
+	x = unsafe.Pointer(v)
+```
+
+在 mspan 中，根据 mspan.allocCache 的 bitMap 信息快速检索到空闲的 object 块，进行返回。
+
+代码位于：runtime/malloc.go
+
+```go
+func nextFreeFast(s *mspan) gclinkptr {
+  // 在 bitMap 上寻找到首个 object 空位
+	theBit := sys.TrailingZeros64(s.allocCache) // Is there a free object in the allocCache?
+	if theBit < 64 {
+		result := s.freeindex + uintptr(theBit)
+		if result < s.nelems {
+			freeidx := result + 1
+			if freeidx%64 == 0 && freeidx != s.nelems {
+				return 0
+			}
+			s.allocCache >>= uint(theBit + 1)
+      // 设置偏移 freeindex
+			s.freeindex = freeidx
+			s.allocCount++
+      // 返回获取 object 空位的内存地址
+			return gclinkptr(result*s.elemsize + s.base())
+		}
+	}
+	return 0
+}
+```
+
+
+
+## 3.5 步骤 3 mcentral 分配
+
+当 mspan 无可用的 object 内存块时，会步入 mcache.nextFree 方法进行兜底。
+
+代码位于 runtime/malloc.go
+
+```go
+func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bool) {
+	s = c.alloc[spc]
+  // 从 mcache 的 span 获取 object 空位的偏移量
+	freeIndex := s.nextFreeIndex()
+	if freeIndex == s.nelems {
+		// 若 mcache 中 span 已经没有空位，则调用 refill 方法从 mcentral 或者 mheap 中获取新的 span
+		c.refill(spc)
+		// 从替换后的 span 中获取 object 空位偏移量
+		s = c.alloc[spc]
+		freeIndex = s.nextFreeIndex()
+	}
+	// ...
+
+	v = gclinkptr(freeIndex*s.elemsize + s.base())
+	s.allocCount++
+	// ...
+	return
+}
+```
+
