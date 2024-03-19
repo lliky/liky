@@ -464,6 +464,103 @@ mcache、mcentral、mheap
 
 ## 3.2 主干方法 mallocgc
 
+mallocgc 函数就是分配内存的主干
+
+代码位置： runtime/malloc.go
+
+```go
+func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
+	// ...
+	
+    // 获取 m
+	mp := acquirem()
+	
+	mp.mallocing = 1
+
+	// 获取当前 P 的 mcache
+	c := getMCache(mp)
+	
+	var span *mspan
+	var x unsafe.Pointer
+    // 判断对象是否是指针，标识 gc 时是否需要展开扫描
+	noscan := typ == nil || typ.PtrBytes == 0
+	// 小于 32 KB 的 微对象、小对象
+	if size <= maxSmallSize {
+        // 小于 16 B 且不是指针的微对象
+		if noscan && size < maxTinySize {
+			// P 里面有一块专属 tiny 内存
+			off := c.tinyoffset
+			// 进行内存对齐
+			if size&7 == 0 {
+				off = alignUp(off, 8)
+			} else if size&3 == 0 {
+				off = alignUp(off, 4)
+			} else if size&1 == 0 {
+				off = alignUp(off, 2)
+			}
+            // 如果当前空间还有，则直接分配返回
+			if off+size <= maxTinySize && c.tiny != 0 {
+				// The object fits into existing tiny block.
+				x = unsafe.Pointer(c.tiny + off)
+				c.tinyoffset = off + size
+				c.tinyAllocs++
+				mp.mallocing = 0
+				releasem(mp)
+				return x
+			}
+			// 分配 mspan
+			span = c.alloc[tinySpanClass]
+			v := nextFreeFast(span)
+			if v == 0 {
+                // 如果 mCache 中获取失败，则从 mCentral 或者 mHeap 中获取进行兜底
+				v, span, shouldhelpgc = c.nextFree(tinySpanClass)
+			}
+			x = unsafe.Pointer(v)
+			(*[2]uint64)(x)[0] = 0
+			(*[2]uint64)(x)[1] = 0
+			size = maxTinySize
+		} else {
+            // 根据对象大小，映射到其所属的 span 的等级(0~67）
+			var sizeclass uint8
+			if size <= smallSizeMax-8 {
+				sizeclass = size_to_class8[divRoundUp(size, smallSizeDiv)]
+			} else {
+				sizeclass = size_to_class128[divRoundUp(size-smallSizeMax, largeSizeDiv)]
+			}
+			size = uintptr(class_to_size[sizeclass])
+            // 找 mcache 里面的对应 class 的 mspan
+			spc := makeSpanClass(sizeclass, noscan)
+			span = c.alloc[spc]
+			v := nextFreeFast(span)
+			if v == 0 {
+                //如果 mCache 中获取失败，则从 mCentral 或者 mHeap 中获取进行兜底
+				v, span, shouldhelpgc = c.nextFree(spc)
+			}
+            // 分配空间
+			x = unsafe.Pointer(v)
+			if needzero && span.needzero != 0 {
+				memclrNoHeapPointers(x, size)
+			}
+		}
+	} else {
+        // 分配 32 KB 的大对象
+		shouldhelpgc = true
+		// 从 mheap 获取 0 号 class 的 span
+		span = c.allocLarge(size, noscan)
+		span.freeindex = 1
+		span.allocCount = 1
+		size = span.elemsize
+        // 分配空间
+		x = unsafe.Pointer(span.base())
+	}
+	// ...
+
+	return x
+}
+```
+
+
+
 
 
 ## 3.3 步骤 1 tiny 分配
@@ -564,10 +661,10 @@ func nextFreeFast(s *mspan) gclinkptr {
 ```go
 func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bool) {
 	s = c.alloc[spc]
-  // 从 mcache 的 span 获取 object 空位的偏移量
+  // 从 mcache 的 mspan 获取 object 空位的偏移量
 	freeIndex := s.nextFreeIndex()
 	if freeIndex == s.nelems {
-		// 若 mcache 中 span 已经没有空位，则调用 refill 方法从 mcentral 或者 mheap 中获取新的 span
+		// 若 mcache 中 mspan 已经没有空位，则调用 refill 方法从 mcentral 或者 mheap 中获取新的 mspan
 		c.refill(spc)
 		// 从替换后的 span 中获取 object 空位偏移量
 		s = c.alloc[spc]
@@ -579,6 +676,264 @@ func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bo
 	s.allocCount++
 	// ...
 	return
+}
+```
+
+若 mcache 中，对应的 mspan 空间不足，则会调用 mcache.refill 方法 从 mcentral 或者 mheap 获取新的 mspan ，填充到 mcache 里面。
+
+```go
+func (c *mcache) refill(spc spanClass) {
+	
+	s := c.alloc[spc]
+
+	// ...
+    // 从 mcentral 当中获取对应等级的 span
+	s = mheap_.central[spc].mcentral.cacheSpan()
+	// ...
+    // 将新的 mspan 填充到 mcahce
+	c.alloc[spc] = s
+}
+```
+
+mcentral.cacheSpan 方法中，会加锁（spanClass 级别的 sweepLocker），分别从 partial 和 full 中尝试获取有空间的 mspan:
+
+代码位于：runtime/mcentral.go
+
+```go
+func (c *mcentral) cacheSpan() *mspan {
+	// ... 
+	var s *mspan
+	var sl sweepLocker
+
+	// 从 partial 扫描部分获取，如果获取直接返回
+	sg := mheap_.sweepgen
+	if s = c.partialSwept(sg).pop(); s != nil {
+		goto havespan
+	}
+
+	sl = sweep.active.begin()
+	if sl.valid {
+		for ; spanBudget >= 0; spanBudget-- {
+            // 从 partial 非扫描部分获取，如果成功，直接返回
+			s = c.partialUnswept(sg).pop()
+			 // ...
+			goto havespan
+		}
+		for ; spanBudget >= 0; spanBudget-- {
+            // 从 full 非扫描部分获取，如果成功，直接返回
+			s = c.fullUnswept(sg).pop()
+			// ...
+			goto havespan
+            // 走到这里，说明 full 非扫描部分的 s.mspan 是满的，直接加入 full 队列， 然后再由 mheap 进行兜底
+			c.fullSwept(sg).push(s.mspan)
+			}
+			
+		}
+		// ...
+	}
+
+// 走到这里，说明 s 已经有一个 object 空位的 mspan 
+havespan:
+	// ...
+	return s
+}
+```
+
+
+
+## 3.6 步骤 4 mheap 分配
+
+在 mcentral.cacheSpan 方法中，若从 partial 和 full 中都找不到合适的 mspan 了，则会调用 mcentral 的 grow 方法从 mheap 分配：
+
+```go
+// Allocate a span to use in an mcache.
+func (c *mcentral) cacheSpan() *mspan {
+	// ...
+    // mcentral 没有可用的 mspan, 则从 mheap 进行分配
+	s = c.grow()
+	if s == nil {
+		return nil
+	}
+
+havespan:
+	// ...
+	return s
+}
+```
+
+函数调用链：mcentral.grow() -> mheap.alloc -> mheap.allocSpan
+
+
+
+代码位于 runtime/mcentral.go
+
+```go
+func (c *mcentral) grow() *mspan {
+	// ...
+	s := mheap_.alloc(npages, c.spanclass)
+	
+	// ...
+	return s
+}
+```
+
+
+
+代码位于 runtime/mheap.go
+
+```go
+func (h *mheap) alloc(npages uintptr, spanclass spanClass) *mspan {
+	var s *mspan
+	systemstack(func() {
+		// ...
+		s = h.allocSpan(npages, spanAllocHeap, spanclass)
+	})
+	return s
+}
+```
+
+
+
+代码位于 runtime/mheap.go
+
+```go
+func (h *mheap) allocSpan(npages uintptr, typ spanAllocType, spanclass spanClass) (s *mspan) {
+	
+    // 从 P 的 pageCache 获取
+	
+    // 加上全局锁
+	lock(&h.lock)
+
+	// ...
+	if base == 0 {
+		// 通过基数树索引快速寻找满足条件的连续空闲页
+		base, scav = h.pages.alloc(npages)
+		// ...
+	}
+	// ...
+	unlock(&h.lock)
+
+HaveSpan:
+	// ...
+    
+    // 把空闲页组装成 mspan
+	h.initSpan(s, typ, spanclass, base, npages)
+
+    // ...
+	return s
+}
+```
+
+
+
+## 3.7 步骤 5 向操作系统申请
+
+若 mheap 没有足够多的空闲页，会发起 mmap 系统调用，向操作系统申请额外的内存空间。
+
+代码位于 runtime/mheap.go
+
+```go
+func (h *mheap) grow(npage uintptr) (uintptr, bool) {
+    av, asize := h.sysAlloc(ask)
+}
+
+func (h *mheap) sysAlloc(n uintptr) (v unsafe.Pointer, size uintptr) {
+       v = sysReserve(unsafe.Pointer(p), n)
+}
+
+func sysReserve(v unsafe.Pointer, n uintptr) unsafe.Pointer {
+	return sysReserveOS(v, n)
+}
+
+func sysReserveOS(v unsafe.Pointer, n uintptr) unsafe.Pointer {
+	p, err := mmap(v, n, _PROT_NONE, _MAP_ANON|_MAP_PRIVATE, -1, 0)
+	if err != 0 {
+		return nil
+	}
+	return p
+}
+```
+
+
+
+## 3.8 基数树寻页
+
+代码位于 runtime/mpagealloc.go
+
+```go
+func (p *pageAlloc) find(npages uintptr) (uintptr, offAddr) {
+    // 加堆锁
+	assertLockHeld(p.mheapLock)
+
+	
+	// current level.
+	i := 0
+
+	lastSum := packPallocSum(0, 0, 0)
+	lastSumIdx := -1
+
+nextLevel:
+   	// 从 根节点开始遍历
+	for l := 0; l < len(p.summary); l++ {
+        
+        //  var levelBits = [summaryLevels]uint{
+        //		summaryL0Bits,		(14)
+        //		summaryLevelBits,	(3)
+        //		summaryLevelBits,	(3)
+        //		summaryLevelBits,	(3)
+        //		summaryLevelBits,	(3)
+		//	}
+        //	除了第一层有 2^14 个节点外，之后的每层只需要关心下面的 8 个节点
+		// 	heap 内存上限就是 2^14 * 16GB = 256T
+        
+        // 根据上一层的 index, 映射下一层的 index
+        // 比如：上层 0，下层 [0 ~ 7]
+        //      上层 1，下层 [8 ~ 15]
+        //      依次类推
+		i <<= levelBits[l]
+		entries := p.summary[l][i : i+entriesPerBlock]
+
+		
+		var base, size uint
+		for j := j0; j < len(entries); j++ {
+			sum := entries[j]
+            // 如果 pallocSum 为 0， 没必要继续往下找了
+			if sum == 0 {
+				// ...
+				continue
+			}
+
+			// 若当前节点对应内存空间首部满足要求，直接返回结果
+			s := sum.start()
+			if size+s >= uint(npages) {
+				if size == 0 {
+					base = uint(j) << logMaxPages
+				}
+				size += s
+				break
+			}
+            // 若当前节点对应内存空间首部不满足，但是内部最长连续页满足，则到下一层节点展开搜索
+			if sum.max() >= uint(npages) {
+				i += j
+				lastSumIdx = i
+				lastSum = sum
+				continue nextLevel
+			}
+            // 内部最长连续页不满足，还可以尝试将尾部与下个节点的首部叠加，看是否满足
+			if size == 0 || s < 1<<logMaxPages {
+				size = sum.end()
+				base = uint(j+1)<<logMaxPages - size
+				continue
+			}
+			// The entry is completely free, so continue the run.
+			size += 1 << logMaxPages
+		}
+    }
+	// 根据索引，就能推导得到对应的内存地址
+	ci := chunkIdx(i)
+	addr := chunkBase(ci) + uintptr(j)*pageSize
+
+	return addr, p.findMappedAddr(firstFree.base)
 }
 ```
 
