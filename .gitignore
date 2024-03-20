@@ -17,3 +17,4 @@
 .idea
 .git
 algorithm/leetcode/*
+.DS_store
