@@ -321,3 +321,185 @@ time2：A 删除对 C  的引用
 
 综上，我们得以证明混合写屏障是能够胜任并发 GC 场景的解决方案的，并满足栈无需添加屏障的前提。
 
+
+
+## 4 垃圾回收全流程
+
+### 4.1 源码导读
+
+#### 4.1.1源码框架
+
+
+
+#### 4.1.2 文件位置
+
+| 流程     | 文件                   |      |
+| :------- | ---------------------- | ---- |
+| 标记准备 | runtime/mgc.go         |      |
+| 调步策略 | runtime/mgcspacer.go   |      |
+| 并发标记 | runtime/mgcmark.go     |      |
+| 清扫流程 | runtime/msweep.go      |      |
+| 位图标识 | runtime/mbitmap.go     |      |
+| 触发屏障 | runtime/mbwbuf.go      |      |
+| 内存回收 | runtime/mgcscavenge.go |      |
+
+### 4.2 触发 GC
+
+
+
+#### 4.2.1 触发类型
+
+触发 GC 的事件类型可以分为如下三种：
+
+| 类型           | 触发事件                          | 校验条件             |
+| -------------- | --------------------------------- | -------------------- |
+| gcTriggerHeap  | 分配对象时触发                    | 堆已分配内存达到阈值 |
+| gcTriggerTime  | 由 forcegchelper 守护协程定时触发 | 每 2 分钟触发一次    |
+| gcTriggerCycle | 用户调度 runtime.GC 方法          | 上一轮 GC 已结束     |
+
+
+
+在触发 GC 时，会通过 gcTrigger.test 方法，结合具体的触发事件类型进行触发条件校验，校验条件如上表
+
+代码位置：runtime/mgc.go
+
+```go
+type gcTriggerKind int
+
+
+const (
+    // 根据堆分配内存情况，判断是否触发GC
+    gcTriggerHeap gcTriggerKind = iota
+    // 定时触发GC
+    gcTriggerTime
+    // 手动触发GC
+    gcTriggerCycle
+}
+
+func (t gcTrigger) test() bool {
+	// ...
+	switch t.kind {
+	case gcTriggerHeap:
+		trigger, _ := gcController.trigger()
+		return gcController.heapLive.Load() >= trigger
+	case gcTriggerTime:
+		if gcController.gcPercent.Load() < 0 {
+			return false
+		}
+		lastgc := int64(atomic.Load64(&memstats.last_gc_nanotime))
+		return lastgc != 0 && t.now-lastgc > forcegcperiod
+	case gcTriggerCycle:
+		return int32(t.n-work.cycles.Load()) > 0
+	}
+	return true
+}
+```
+
+#### 4.2.2 定时触发 GC
+
+定时触发源码文件及位置：
+
+| 方法           | 文件            | 作用                                          |
+| -------------- | --------------- | --------------------------------------------- |
+| init           | runtime/proc.go | runtime 包初始化，开启一个 forcegchelper 协程 |
+| forcegchelper  | runtime/proc.go | 循环阻塞挂起 + 定时触发 GC                    |
+| main           | runtime/proc.go | 调用 sysmon 方法                              |
+| sysmon         | runtime/proc.go | 定时唤醒 forcegchelper ，从而触发 GC          |
+| gcTrigger.test | runtime/mgc.go  | 校验是否满足 gc 触发条件                      |
+| gcStart        | runtime/mgc.go  | 标记准备阶段主流程方法                        |
+
+
+
+1. 启动定时触发协程并阻塞等待
+
+   runtime 包初始化的时候，即会异步开启一个守护协程，通过 for 循环 + park 的方式，循环阻塞等待被唤醒。
+
+   当被唤醒后，则调用 gcStart 方法进入标记准备阶段，尝试开启新一轮 GC，此时触发 GC 的事件类型正是 gcTriggerTime（定时触发）。
+
+   ```go
+   var forcegc    forcegcstate
+   
+   type forcegcstate struct {
+   	lock mutex
+   	g    *g
+   	idle atomic.Bool
+   }
+   
+   func init() {
+   	go forcegchelper()
+   }
+   
+   func forcegchelper() {
+   	forcegc.g = getg()
+   	lockInit(&forcegc.lock, lockRankForcegc)
+   	for {
+   		lock(&forcegc.lock)
+   		
+   		forcegc.idle.Store(true)
+       // 令 forcegc.g 陷入被动阻塞，g 的状态会设置为 waiting，当达成 gc 条件时，会被唤醒
+   		goparkunlock(&forcegc.lock, waitReasonForceGCIdle, traceBlockSystemGoroutine, 1)
+   		// g 被唤醒，则调用 gcStart 方法真正开启 gc 主流程
+   		gcStart(gcTrigger{kind: gcTriggerTime, now: nanotime()})
+   	}
+   }
+   ```
+
+2. 唤醒定时触发协程
+
+   runtime  包下的 main 函数会通过 systemstack 操作切换至 g0，并调用 system 方法，轮询尝试将 forcegchelper 协程添加到 gList 中，并在 injectglist 方法将其唤醒：
+
+   ```go
+   func main() {
+   	// ...
+     systemstack(func(){
+       newm(sysmon, nil,  -1)
+     })
+     // ...
+   }
+   ```
+
+   ```go
+   func sysmon() {
+   	// ...
+     
+   	for {
+   		// ...
+   		// 通过 gcTrigger.test 方法检查是否发起 gc，触发类型是 gcTriggerTime, 定时触发
+   		if t := (gcTrigger{kind: gcTriggerTime, now: now}); t.test() && forcegc.idle.Load() {
+   			lock(&forcegc.lock)
+   			forcegc.idle.Store(false)
+   			var list gList
+         // 需要发起 gc，则将 forcegc.g 注入 list 中，injectglist 方法内部会执行唤醒操作
+   			list.push(forcegc.g)
+   			injectglist(&list)
+   			unlock(&forcegc.lock)
+   		}
+   		// ...
+   	}
+     // ...
+   }
+   ```
+
+3. 定时触发 GC 条件校验
+
+   在 gcTrigger.test 方法中，针对 gcTriggerTime 类型的触发事件，其校验条件则是触发时间间隔到达 2 分钟以上。
+
+   ```go
+   // 2 * 60 * 1e9 纳秒 = 2 * 60 秒 = 2 分钟
+   var forcegcperiod int64 = 2 * 60 * 1e9
+   
+   func (t gcTrigger) test() bool {
+   	// ...
+     // 等待 2 min 发起一轮
+   	case gcTriggerTime:
+   		// ...
+   		lastgc := int64(atomic.Load64(&memstats.last_gc_nanotime))
+   		return lastgc != 0 && t.now-lastgc > forcegcperiod
+   	// ...
+   }
+   ```
+
+
+
+
+
