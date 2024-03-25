@@ -598,3 +598,76 @@ func (t gcTrigger) test() bool {
 }
 ```
 
+
+
+### 4.3  标记准备
+
+本章讲诉的是标记准备阶段，会讲解屏障机制以及 STW 的底层实现，所涉及的源码方法以及文件位置如下：
+
+| 方法                         | 文件            | 作用                                                         |
+| ---------------------------- | --------------- | ------------------------------------------------------------ |
+| gcStart                      | runtime/mgc.go  | 标记准备阶段主流程方法                                       |
+| gcBgMarkStartWorkers         | runtime/mgc.go  | 批量启动标记协程，数量对应于 P 的个数                        |
+| gcBgMarkWorker               | runtime/mgc.go  | 标记协程主流程方法，启动之初会先阻塞挂起，待被唤醒后真正执行任务 |
+| stopTheWorldWithSema         | runtime/proc.go | 即 STW，停止 P                                               |
+| gcControllerState.startCycle | runtime/mgc.go  | 限制标记协程执行频率，目标是令标记协程对 CPU 的占用率趋近于 25 % |
+| setGCPhase                   | runtime/mgc.go  | 更新 GC 阶段。当为标记阶段（GCMark）时会启用混合写屏障       |
+| gcMarkTinyAllocs             | runtime/mgc.go  | 标记 mache 中的 tiny 对象                                    |
+| startTheWorldWithSema        | runtime/mgc.go  | 与 STW 相反，重新唤醒各个 P                                  |
+
+
+
+#### 4.3.1 主流程
+
+```go
+func gcStart(trigger gcTrigger) {
+	// ...
+  
+  // 检查是否达到 GC 条件，会根据 trigger 类型作为 dispatch ，常见的就是 手动，堆内存，时间间隔
+	for trigger.test() && sweepone() != ^uintptr(0) {
+		sweep.nbgsweep++
+	}
+
+	// 加锁
+	semacquire(&work.startSema)
+	// 加锁之后再次检查
+	if !trigger.test() {
+		semrelease(&work.startSema)
+		return
+	}
+
+	// ...
+
+  // 由于进入了 GC 模式，会根据 P 的数量启动多个 GC 并发标记协程，但是会先阻塞挂起，等待被唤醒
+	gcBgMarkStartWorkers()
+
+	systemstack(gcResetMarkState)
+
+	// 切换到 g0，执行 stop the world 操作
+	systemstack(func() { stopTheWorldWithSema(stwGCSweepTerm) })
+	
+  // ...
+  
+  // 限制标记协程占用 CPU 时间片的比例趋近于 25%
+	gcController.startCycle(now, int(gomaxprocs), trigger)
+
+	// ...
+  
+  // 设置 GC 阶段为 _GCmark ，启用混合写屏障
+	setGCPhase(_GCmark)
+
+	// 对 mcache 中的 tiny 对象进行标记
+	gcMarkTinyAllocs()
+
+	// 切换至 g0 ，重新 start the world
+	systemstack(func() {
+		now = startTheWorldWithSema()
+		// ...
+	})
+
+	// 　....
+}
+```
+
+
+
