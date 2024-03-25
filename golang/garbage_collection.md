@@ -397,6 +397,8 @@ func (t gcTrigger) test() bool {
 
 #### 4.2.2 定时触发 GC
 
+![time trigger](../image/go/gc/gc_19.png)
+
 定时触发源码文件及位置：
 
 | 方法           | 文件            | 作用                                          |
@@ -501,5 +503,98 @@ func (t gcTrigger) test() bool {
 
 
 
+#### 4.2.3 对象分配触发 GC
 
+对象分配触发源码方法及文件如下：
+
+| 方法           | 文件              | 作用                     |
+| -------------- | ----------------- | ------------------------ |
+| mallocgc       | runtime/malloc.go | 分配对象主流程方法       |
+| gcTrigger.test | runtime/mgc.go    | 校验是否满足 gc 触发条件 |
+| gcStart        | runtime/mgc.go    | 标记准备阶段主流程方法   |
+
+在分配对象的 malloc 方法中，若满足如下两个条件之一，都会发起一次触发 GC 的尝试：
+
+* 初始话对象在 mcache 中对应 spanClass 的 mspan 空间已用尽
+* 初始化一个对象大小大于 32KB 
+
+触发事件类型是：gcTriggerHeap，并在调用 gcStart 方法的内部执行 gcTrigger.test 进行条件检查。
+
+
+
+1. 对象分配触发 GC
+
+   mallocgc 是分配对象的主流程方法：
+
+   ```go
+   func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
+   	// ...
+   	if size <= maxSmallSize {
+   		if noscan && size < maxTinySize {
+   		// ...
+   		} else {
+   			if v == 0 {
+           // 若 mcache 中对应 spanClass 的 mspan 已满，置 true
+   				v, span, shouldhelpgc = c.nextFree(spc)
+   			}
+   		}
+   	} else {
+       // 申请大小大于 32KB 的大对象
+   		shouldhelpgc = true
+   		// ...
+   		}
+   	}
+   	// ...
+   	// 尝试触发 gc，类型为 gcTriggerHeap，校验逻辑位于 gcTrigger.test 方法中
+   	if shouldhelpgc {
+   		if t := (gcTrigger{kind: gcTriggerHeap}); t.test() {
+   			gcStart(t)
+   		}
+   	}
+   	// ...
+   }
+   ```
+
+2. 校验 GC 触发条件
+
+   在 gcTrigger.test 方法中，针对 gcTriggerHeap 类型的触发事件，其校验条件是判断当前堆已使用内存是否到达阈值。此处的堆内存阈值会在上一轮 GC 结束时进行设定。
+
+   ```go
+   func (t gcTrigger) test() bool {
+   	// ...
+   	switch t.kind {
+   	case gcTriggerHeap:
+   		// ...
+   		trigger, _ := gcController.trigger()
+   		return gcController.heapLive.Load() >= trigger
+   	}
+   	return true
+   }
+   ```
+
+
+
+#### 4.2.4 手动触发 GC
+
+最后一种触发 GC 形式时手动触发，入口位于 runtime 包的公共方法：runtime.GC
+
+| 方法    | 文件           | 作用                   |
+| ------- | -------------- | ---------------------- |
+| GC      | runtime/mgc.go | 手动触发 GC 主流程方法 |
+| gcStart | runtime/mgc.go | 标记准备阶段主流程方法 |
+
+这种类型的校验条件是：上一轮 GC 已经完成，此时才能开启新一轮 GC 任务。
+
+```go
+func (t gcTrigger) test() bool {
+	// ...
+	switch t.kind {
+	// ...
+	case gcTriggerCycle:
+		// t.n > work.cycles, but accounting for wraparound.
+		return int32(t.n-work.cycles.Load()) > 0
+	}
+	return true
+}
+```
 
