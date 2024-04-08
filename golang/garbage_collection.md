@@ -671,3 +671,239 @@ func gcStart(trigger gcTrigger) {
 
 
 
+#### 4.3.2 启动标记流程
+
+gcBgMarkStartWorkers 方法中启动了对应于 P 数量的并发标记协程，并且通过 notetsleepg 机制，使得 for 循环与 gcBgMarkWorker 内部的唤醒形成联动，确保每个 P 都能分得一个标记协程。
+
+```go
+func gcBgMarkStartWorkers() {
+	// 开启对应于 P 个数标记协程，但是内部将 g 添加到全局的 pool 里面，并通过 gopark 阻塞挂起
+	for gcBgMarkWorkerCount < gomaxprocs {
+		go gcBgMarkWorker()
+		// 挂起，等待 gcBgMarkWorker 方法中完成标记协程与 P 的绑定后唤醒
+		notetsleepg(&work.bgMarkReady, -1)
+		noteclear(&work.bgMarkReady)
+
+		gcBgMarkWorkerCount++
+	}
+}
+```
+
+
+
+gcBgMarkWorker 方法中将 g 包装成一个 node 添加到
+
+```go
+func gcBgMarkWorker() {
+	gp := getg()
+
+	gp.m.preemptoff = "GC worker init"
+	node := new(gcBgMarkWorkerNode)
+	gp.m.preemptoff = ""
+
+	node.gp.set(gp)
+
+	node.m.set(acquirem())
+  
+  // 唤醒外部的 for 循环
+	notewakeup(&work.bgMarkReady)
+
+	for {
+		// 当前 g 阻塞至此，直到 gcController.findRunnableGCWorker 方法调用，会将当前 g 唤醒
+		gopark(func(g *g, nodep unsafe.Pointer) bool {
+			node := (*gcBgMarkWorkerNode)(nodep)
+
+			// 将当前 g 包装成一个 node 添加到 gcBgMarkWorkerPool 中
+			gcBgMarkWorkerPool.push(&node.node)
+			return true
+		}, unsafe.Pointer(node), waitReasonGCWorkerIdle, traceBlockSystemGoroutine, 0)
+		// ...
+	}
+}
+```
+
+#### 4.3.3 Stop the world
+
+gcStart 方法在调用 gcBgMarkStartWorkers 方法异步启动标记协程后，会执行 STW 操作停止所有用户协程，其实现位于 stopTheWorldWithSema 方法：
+
+* 取锁，sched.lock
+* 将 sched.gcwaiting 置为 true，后续的调度流程见其标识，都会阻塞挂起
+* 抢占所有 g，并将 p 的状态置为 syscall
+* 将所有 p 的状态改为 stop
+* 若部分任务无法被抢占，则等待其完成后再进行抢占
+* 调度方法 worldStopped
+
+```go
+func stopTheWorldWithSema(reason stwReason) {
+	gp := getg()
+
+  // 全局调度锁
+	lock(&sched.lock)
+	sched.stopwait = gomaxprocs
+  // 设置标志，之后所有的调度都会阻塞等待
+	sched.gcwaiting.Store(true)
+  // 发送抢占信息抢占所有 g 后，将 p 状态置为 syscall
+	preemptall()
+	// 将当前 p 的状态置为 stop
+	gp.m.p.ptr().status = _Pgcstop // Pgcstop is only diagnostic.
+	sched.stopwait--
+	// 把所有 p 的状态置为 sop
+	for _, pp := range allp {
+		s := pp.status
+		if s == _Psyscall && atomic.Cas(&pp.status, s, _Pgcstop) {
+			pp.syscalltick++
+			sched.stopwait--
+		}
+	}
+	// 把空闲的 p 的状态置为 stop
+	now := nanotime()
+	for {
+		pp, _ := pidleget(now)
+		if pp == nil {
+			break
+		}
+		pp.status = _Pgcstop
+		sched.stopwait--
+	}
+	wait := sched.stopwait > 0
+	unlock(&sched.lock)
+
+	// 若有 p 无法被抢占，则阻塞直到将其统统抢占完成
+	if wait {
+		for {
+			// wait for 100us, then try to re-preempt in case of any races
+			if notetsleep(&sched.stopnote, 100*1000) {
+				noteclear(&sched.stopnote)
+				break
+			}
+			preemptall()
+		}
+	}
+
+	
+	// stop the world
+	worldStopped()
+}
+```
+
+#### 4.3.4 控制标记协程频率
+
+gcStart 方法中，会通过 gcControllerState.startCycle 方法，将标记协程对 CPU 的占用率控制在 25% 左右，此时，根据 P 的数量是否能被 4 整除，分为两种处理方式：
+
+* 若 P 能够被 4 整除，则简单将标记协程的数量设置为 P/4
+* 若 P 不能被 4 整除，则通过控制标记协程执行时长的方式，来使全局标记协程对 CPU 的使用率趋近于 25%
+
+```go
+
+// 目标：标记协程对 CPU 的使用率维持在 25% 的水平
+const gcBackgroundUtilization = 0.25
+
+func (c *gcControllerState) startCycle(markStartTime int64, procs int, trigger gcTrigger) 
+
+	// ...
+
+	// P 的个数 * 0.25
+	totalUtilizationGoal := float64(procs) * gcBackgroundUtilization
+	// P 的个数 * 0.25 后四舍五入取整
+	dedicatedMarkWorkersNeeded := int64(totalUtilizationGoal + 0.5)
+	utilError := float64(dedicatedMarkWorkersNeeded)/totalUtilizationGoal - 1
+	const maxUtilError = 0.3
+	// 若 P 的个数不能被 4 整除
+	if utilError < -maxUtilError || utilError > maxUtilError {
+		if float64(dedicatedMarkWorkersNeeded) > totalUtilizationGoal {
+			dedicatedMarkWorkersNeeded--
+		}
+    // 计算出每个 P 需要额外执行标记任务的时间片比例
+		c.fractionalUtilizationGoal = (totalUtilizationGoal - float64(dedicatedMarkWorkersNeeded)) / float64(procs)
+  // 若 P 的个数可以被 4 整除，则无需控制执行时长
+	} else {
+		c.fractionalUtilizationGoal = 0
+	}
+
+	// ...
+}
+```
+
+#### 3.3.5 设置屏障
+
+gcStart 调用 setGCPhase 方法，标志 GC 正式进入标记阶段，在 GCmark 和 GCmarktermination 阶段，会启用混合写屏障机制。
+
+```go
+func setGCPhase(x uint32) {
+	atomic.Store(&gcphase, x)
+	writeBarrier.needed = gcphase == _GCmark || gcphase == _GCmarktermination
+	writeBarrier.enabled = writeBarrier.needed
+}
+```
+
+#### 3.3.6 Tiny 对象标记
+
+调用 gcMarkTinyAllocs 方法，遍历所有的 P，对 mcache 中的 tiny 对象分别调用 greyobject 方法进行置灰。
+
+```go
+func gcMarkTinyAllocs() {
+	assertWorldStopped()
+
+	for _, p := range allp {
+		c := p.mcache
+		if c == nil || c.tiny == 0 {
+			continue
+		}
+    // 获取 tiny 对象
+		_, span, objIndex := findObject(c.tiny, 0, 0)
+		gcw := &p.gcw
+    // tiny 对象置灰（标记 + 入队）
+		greyobject(c.tiny, 0, 0, span, gcw, objIndex)
+	}
+}
+```
+
+#### 3.3.7 Start the world
+
+stopTheWorldWithSema 和 startTheWorldWithSema 形成对偶。该方法会重新恢复世界，将所有 P 唤醒。若缺少 M，则会新建 M 和 P 进行绑定。
+
+```go
+func startTheWorldWithSema() int64 {
+	assertWorldStopped()
+
+	// ...
+	p1 := procresize(procs)
+	// 重启世界
+	worldStarted()
+
+  // 遍历所有 P，将其唤醒
+	for p1 != nil {
+		p := p1
+		p1 = p1.link.ptr()
+		if p.m != 0 {
+			mp := p.m.ptr()
+			p.m = 0
+			if mp.nextp != 0 {
+				throw("startTheWorld: inconsistent mp->nextp")
+			}
+			mp.nextp.set(p)
+			notewakeup(&mp.park)
+		} else {
+			// Start M to run P.  Do not start another M below.
+			newm(nil, p, -1)
+		}
+	}
+
+	// ...
+	return startTime
+}
+```
+
+### 4.4 并发标记
+
+标记协程如何被唤醒
+
+#### 4.4.1 调度标记协程
+
+| 方法                                   | 文件                | 作用                                   |
+| -------------------------------------- | ------------------- | -------------------------------------- |
+| schedule                               | runtime/proc.go     | 调度协程                               |
+| findRunnable                           | runtime/proc.go     | 获取可执行的协程                       |
+| gcControllerState.findRunnableGCWorker | runtime/mgcspace.go | 获取可执行的标记协程，同时将该协程唤醒 |
+| execute                                | runtime/proc.go     | 执行协程                               |
+
