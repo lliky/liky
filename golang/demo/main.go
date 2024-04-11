@@ -1,14 +1,16 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
+
+type AA struct {
+	Name string
+}
 
 func main() {
-	fmt.Println(make(chan int))
-	for i := 1; i < 16; i++ {
-		and := i & 3
-		fmt.Println(i, " & 3 = ", and)
-	}
-	fmt.Println(alignUp(12, 4))
+	fmt.Println(time.Now().Add(6 * time.Minute))
 }
 
 func alignUp(n, a uintptr) uintptr {

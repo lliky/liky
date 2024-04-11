@@ -907,3 +907,109 @@ func startTheWorldWithSema() int64 {
 | gcControllerState.findRunnableGCWorker | runtime/mgcspace.go | 获取可执行的标记协程，同时将该协程唤醒 |
 | execute                                | runtime/proc.go     | 执行协程                               |
 
+在 GMP 调度的主干方法 schedule 中，会通过 g0 调用 findRunnable 方法为 P 寻找下一个可执行的 g，找到后会调用 execute 方法，内部完成由 g0 -> g 的切换，真正执行用户协程中的任务。
+
+```go
+func schedule() {
+	// ...
+    gp, inheritTime, tryWakeP := findRunnable()
+    
+    // ...
+    execute(gp, inheritTime)
+}
+```
+
+
+
+在 findRunnable 方法中，当通过全局标识 gcBlackenEnabled 发现当前开启 GC 模式时，会调用 gcController.findRunnableGCWorker 唤醒并取得标记协程
+
+ ```go
+ func findRunnable() (gp *g, inheritTime, tryWakeP bool) {
+     // ...
+ 	if gcBlackenEnabled != 0 {
+ 		gp, tnow := gcController.findRunnableGCWorker(pp, now)
+ 		if gp != nil {
+ 			return gp, false, true
+ 		}
+ 	}
+     // ...
+ }
+ ```
+
+
+
+```go
+func (c *gcControllerState) findRunnableGCWorker(pp *p, now int64) (*g, int64) {
+	// ...
+	//
+	if !gcMarkWorkAvailable(pp) {
+		// No work to be done right now. This can happen at
+		// the end of the mark phase when there are still
+		// assists tapering off. Don't bother running a worker
+		// now because it'll just return immediately.
+		return nil, now
+	}
+
+	// Grab a worker before we commit to running below.
+	node := (*gcBgMarkWorkerNode)(gcBgMarkWorkerPool.pop())
+	if node == nil {
+		// There is at least one worker per P, so normally there are
+		// enough workers to run on all Ps, if necessary. However, once
+		// a worker enters gcMarkDone it may park without rejoining the
+		// pool, thus freeing a P with no corresponding worker.
+		// gcMarkDone never depends on another worker doing work, so it
+		// is safe to simply do nothing here.
+		//
+		// If gcMarkDone bails out without completing the mark phase,
+		// it will always do so with queued global work. Thus, that P
+		// will be immediately eligible to re-run the worker G it was
+		// just using, ensuring work can complete.
+		return nil, now
+	}
+
+	decIfPositive := func(val *atomic.Int64) bool {
+		for {
+			v := val.Load()
+			if v <= 0 {
+				return false
+			}
+
+			if val.CompareAndSwap(v, v-1) {
+				return true
+			}
+		}
+	}
+
+	if decIfPositive(&c.dedicatedMarkWorkersNeeded) {
+		// This P is now dedicated to marking until the end of
+		// the concurrent mark phase.
+		pp.gcMarkWorkerMode = gcMarkWorkerDedicatedMode
+	} else if c.fractionalUtilizationGoal == 0 {
+		// No need for fractional workers.
+		gcBgMarkWorkerPool.push(&node.node)
+		return nil, now
+	} else {
+		// Is this P behind on the fractional utilization
+		// goal?
+		//
+		// This should be kept in sync with pollFractionalWorkerExit.
+		delta := now - c.markStartTime
+		if delta > 0 && float64(pp.gcFractionalMarkTime)/float64(delta) > c.fractionalUtilizationGoal {
+			// Nope. No need to run a fractional worker.
+			gcBgMarkWorkerPool.push(&node.node)
+			return nil, now
+		}
+		// Run a fractional worker.
+		pp.gcMarkWorkerMode = gcMarkWorkerFractionalMode
+	}
+
+	// Run the background mark worker.
+	gp := node.gp.ptr()
+	casgstatus(gp, _Gwaiting, _Grunnable)
+	if traceEnabled() {
+		traceGoUnpark(gp, 0)
+	}
+	return gp, now
+}
+```
+
