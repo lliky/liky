@@ -941,29 +941,14 @@ func schedule() {
 ```go
 func (c *gcControllerState) findRunnableGCWorker(pp *p, now int64) (*g, int64) {
 	// ...
-	//
+	// 保证当前 P 是可以调度标记协程的，每个 P 只能执行一个标记协程
 	if !gcMarkWorkAvailable(pp) {
-		// No work to be done right now. This can happen at
-		// the end of the mark phase when there are still
-		// assists tapering off. Don't bother running a worker
-		// now because it'll just return immediately.
 		return nil, now
 	}
 
-	// Grab a worker before we commit to running below.
+    // 从全局标记协程池 gcBgMarkWorkerPool 中取出 g
 	node := (*gcBgMarkWorkerNode)(gcBgMarkWorkerPool.pop())
 	if node == nil {
-		// There is at least one worker per P, so normally there are
-		// enough workers to run on all Ps, if necessary. However, once
-		// a worker enters gcMarkDone it may park without rejoining the
-		// pool, thus freeing a P with no corresponding worker.
-		// gcMarkDone never depends on another worker doing work, so it
-		// is safe to simply do nothing here.
-		//
-		// If gcMarkDone bails out without completing the mark phase,
-		// it will always do so with queued global work. Thus, that P
-		// will be immediately eligible to re-run the worker G it was
-		// just using, ensuring work can complete.
 		return nil, now
 	}
 
@@ -980,30 +965,22 @@ func (c *gcControllerState) findRunnableGCWorker(pp *p, now int64) (*g, int64) {
 		}
 	}
 
+    // 确定标记模式
 	if decIfPositive(&c.dedicatedMarkWorkersNeeded) {
-		// This P is now dedicated to marking until the end of
-		// the concurrent mark phase.
 		pp.gcMarkWorkerMode = gcMarkWorkerDedicatedMode
 	} else if c.fractionalUtilizationGoal == 0 {
-		// No need for fractional workers.
 		gcBgMarkWorkerPool.push(&node.node)
 		return nil, now
 	} else {
-		// Is this P behind on the fractional utilization
-		// goal?
-		//
-		// This should be kept in sync with pollFractionalWorkerExit.
 		delta := now - c.markStartTime
 		if delta > 0 && float64(pp.gcFractionalMarkTime)/float64(delta) > c.fractionalUtilizationGoal {
-			// Nope. No need to run a fractional worker.
 			gcBgMarkWorkerPool.push(&node.node)
 			return nil, now
 		}
-		// Run a fractional worker.
 		pp.gcMarkWorkerMode = gcMarkWorkerFractionalMode
 	}
 
-	// Run the background mark worker.
+	// 建标记协程的状态置为 runnable
 	gp := node.gp.ptr()
 	casgstatus(gp, _Gwaiting, _Grunnable)
 	if traceEnabled() {
@@ -1012,4 +989,588 @@ func (c *gcControllerState) findRunnableGCWorker(pp *p, now int64) (*g, int64) {
 	return gp, now
 }
 ```
+
+#### 4.4.2 并发标记启动
+
+
+
+| 方法            | 文件               | 作用                               |
+| --------------- | ------------------ | ---------------------------------- |
+| gcBgMarkWorker  | runtime/mgc.go     | 标记协程主方法                     |
+| gcDrain         | runtime/mgcmark.go | 循环处理 gcw 队列的主方法          |
+| markroot        | runtime/mgcmark.go | 标记根对象                         |
+| scanobject      | runtime/mgcmark.go | 扫描一个对象，将其指向对象分别置灰 |
+| greyobject      | runtime/mgcmark.go | 将一个对象置灰                     |
+| mbits.setMarked | runtime/mbitmap.go | 标记一个对象                       |
+| gcw.putFast/put | runtime/mgcwork.go | 将一个对象加入 gcw 队列            |
+
+标记协程被唤醒后，代码依然在 gcBgMarkWorker 方法中，此时会根据之前设置的标记模式，调用 gcDrain 方法开始执行并发标记任务。
+
+标记模式包括以下三种：
+
+* gcMarkWorkerDedicatedMode：专一模式，需要完整执行完标记任务，不可被抢占
+* gcMarkWorkerFractionalMode：分时模式，当标记协程执行时长达到一定比例后，可以被抢占
+* gcMarkWorkerIdleMode：空闲模式，可以被抢占
+
+在专一模式下，会先以可被抢占模式尝试执行，若真的被用户协程抢占，则会先将当前 P 本地队列的用户协程放到全局 g 队列中，再将标记模式改为不可抢占模式。这样子设计优势，通过负载均衡的方式，减少当前 P 下用户协程的等待时间，提高用户体验。
+
+> 如果判断是否被抢占：gp.preempt  ????
+
+
+
+在 gcDrain 方法中，有两个核心的  gcDrainFlags 控制着标记协程的运行风格：
+
+* gcDrainIdle：空闲模式，随时可以被抢占
+* gcDrainFractional：分时模式，执行一定比例的时长后可被抢占
+
+```go
+type gcDrainFlags int
+
+const (
+	gcDrainUntilPreempt gcDrainFlags = 1 << iota
+	gcDrainFlushBgCredit
+	gcDrainIdle
+	gcDrainFractional
+)
+
+func gcBgMarkWorker() {
+	// ...
+    
+	for {
+		// ...
+        
+		node.m.set(acquirem())
+		pp := gp.m.p.ptr() // P can't change with preemption disabled.
+
+		// ...
+
+		systemstack(func() {
+			casGToWaiting(gp, _Grunning, waitReasonGCWorkerActive)
+			switch pp.gcMarkWorkerMode {
+			default:
+				throw("gcBgMarkWorker: unexpected gcMarkWorkerMode")
+			case gcMarkWorkerDedicatedMode:
+                // 设置成可被抢占模式执行标记，若被抢占，会将用户协程加入到全局 g 队列
+				gcDrain(&pp.gcw, gcDrainUntilPreempt|gcDrainFlushBgCredit)
+				if gp.preempt {
+					// 将用户协程加入到全局队列中
+					if drainQ, n := runqdrain(pp); n > 0 {
+						lock(&sched.lock)
+						globrunqputbatch(&drainQ, int32(n))
+						unlock(&sched.lock)
+					}
+				}
+				// 专一模式
+				gcDrain(&pp.gcw, gcDrainFlushBgCredit)
+			case gcMarkWorkerFractionalMode:
+                // 分时模式
+				gcDrain(&pp.gcw, gcDrainFractional|gcDrainUntilPreempt|gcDrainFlushBgCredit)
+			case gcMarkWorkerIdleMode:
+                // 空闲模式
+				gcDrain(&pp.gcw, gcDrainIdle|gcDrainUntilPreempt|gcDrainFlushBgCredit)
+			}
+			casgstatus(gp, _Gwaiting, _Grunning)
+		})
+        
+		// ...
+	}
+}
+```
+
+#### 4.4.3 标记主流程
+
+gcDrain 方法是并发标记阶段的核心方法：
+
+* 在空闲模式（idle）和分时模式（fractional）下，会提前设好 check 函数（pollwork 和 pollFractionalWorkerExit）
+* 标记根对象
+* 循环从 gcw 缓存队列中取出灰色对象，执行 scanObject 方法进行扫描标记
+* 定期检查 check 函数，判断流程是否该被打断
+
+```go
+func gcDrain(gcw *gcWork, flags gcDrainFlags) {
+    
+    gp := getg().m.curg
+    // 标记模式
+    preemptible := flags&gcDrainUntilPreempt != 0
+    flushBgCredit := flags&gcDrainFlushBgCredit != 0
+    idle := flags&gcDrainIdle != 0
+
+    initScanWork := gcw.heapScanWork
+
+    
+    var check func() bool
+    if flags&(gcDrainIdle|gcDrainFractional) != 0 {
+       checkWork = initScanWork + drainCheckThreshold
+       if idle {
+          check = pollWork
+       } else if flags&gcDrainFractional != 0 {
+          check = pollFractionalWorkerExit
+       }
+    }
+
+    // 若根对象还未完成标记，则先进行根对象标记
+    if work.markrootNext < work.markrootJobs {
+       // Stop if we're preemptible or if someone wants to STW.
+       for !(gp.preempt && (preemptible || sched.gcwaiting.Load())) {
+          job := atomic.Xadd(&work.markrootNext, +1) - 1
+          if job >= work.markrootJobs {
+             break
+          }
+          // 标记根对象
+          markroot(gcw, job, flushBgCredit)
+          if check != nil && check() {
+             goto done
+          }
+       }
+    }
+
+   	// 遍历 gcw 队列，进行对象标记
+    for !(gp.preempt && (preemptible || sched.gcwaiting.Load())) {
+       
+       if work.full == 0 {
+          gcw.balance()
+       }
+	   // 尝试从 P 本地队列中获取对象，无锁
+       b := gcw.tryGetFast()
+       if b == 0 {
+          // 尝试从全局队列中获取对象，加锁
+          b = gcw.tryGet()
+          if b == 0 {
+             // 刷新写屏障缓存
+             wbBufFlush()
+             b = gcw.tryGet()
+          }
+       }
+       if b == 0 {
+          // 无对象标记，跳出 for
+          break
+       }
+       // 进行对象标记，并顺延指针进行后续对象的扫描
+       scanobject(b, gcw)
+
+       // ...
+    }
+
+done:
+    // ...
+}
+```
+
+#### 4.4.4 灰对象缓存队列
+
+在上小节，涉及到一个数据结构：gcw，它是灰色对象的存储代理和载体，在标记过程中，需要持续不断的从队列中取出灰色对象，进行扫描，并将新的灰色对象通过 gcw 加入到缓存队列中。
+
+灰对象缓存队列分为两个：
+
+* 每个 P 私有的 gcWork，实现上由两个单向链表构成，采用轮换机制使用
+* 全局队列 workType.full，底层是一个通过 CAS 操作维护的栈结构，所有 P 共享
+
+
+
+1. gcWork
+
+   数据结构：
+
+   ```go
+   type lfnode struct {
+   	next    uint64
+   	pushcnt uintptr
+   }
+   
+   type workbufhdr struct {
+   	node lfnode // must be first
+   	nobj int
+   }
+   
+   type workbuf struct {
+   	_ sys.NotInHeap
+   	workbufhdr
+   	// account for the above fields
+   	obj [(_WorkbufSize - unsafe.Sizeof(workbufhdr{})) / goarch.PtrSize]uintptr
+   }
+   
+   type gcWork {
+       //...
+   	wbuf1, wbuf2 *workbuf
+       
+       //...
+   }
+   
+   ```
+
+   在 gcDrain 方法中，会持续不断从当前 P 的 gcw 中获取灰色对象，在调用策略上，会先尝试取 P 独有部分，然后再通过 gcw 获取全局共享部分
+
+   ```go
+   // 尝试从 P 本地队列中获取对象，无锁
+   b := gcw.tryGetFast()
+   if b == 0 {
+      // 尝试从全局队列中获取对象，加锁
+      b = gcw.tryGet()
+      if b == 0 {
+      		// 刷新写屏障缓存
+      		wbBufFlush()
+   		b = gcw.tryGet()
+   	}
+   }
+   ```
+
+   tryGetFast 会先尝试从 gcWork.wbuf1 中获取灰色对象.
+
+   ```go
+   func (w *gcWork) tryGetFast() uintptr {
+       wbuf := w.wbuf1
+       if wbuf == nil || wbuf.nobj == 0 {
+          return 0
+       }
+   
+       wbuf.nobj--
+       return wbuf.obj[wbuf.nobj]
+   }
+   ```
+
+   若 gcWork.wbuf1 缺灰，则会在 gcWork.tryGet 方法中交换 wbuf1 和 wbuf2 ，再尝试获取一次。若仍然缺灰，则会调用 trygetfull 方法，从全局缓存队列中获取.
+
+   ```go
+   func (w *gcWork) tryGet() uintptr {
+       wbuf := w.wbuf1
+       if wbuf == nil {
+          w.init()
+          wbuf = w.wbuf1
+          // wbuf is empty at this point.
+       }
+       if wbuf.nobj == 0 {
+          w.wbuf1, w.wbuf2 = w.wbuf2, w.wbuf1
+          wbuf = w.wbuf1
+          if wbuf.nobj == 0 {
+             owbuf := wbuf
+             wbuf = trygetfull()
+             if wbuf == nil {
+                return 0
+             }
+             putempty(owbuf)
+             w.wbuf1 = wbuf
+          }
+       }
+   
+       wbuf.nobj--
+       return wbuf.obj[wbuf.nobj]
+   }
+   ```
+
+2. workType.full
+
+   灰色对象的全局缓存队列是一个栈结构，调用pop方法时，会通过CAS方式依次从栈顶取出一个缓存链表.
+
+   ```go
+   var work workType
+   
+   type workType struct {
+       full  lfstack  
+   }
+   ```
+
+   ```go
+   func (head *lfstack) pop() unsafe.Pointer {
+   	for {
+   		old := atomic.Load64((*uint64)(head))
+   		if old == 0 {
+   			return nil
+   		}
+   		node := lfstackUnpack(old)
+   		next := atomic.Load64(&node.next)
+   		if atomic.Cas64((*uint64)(head), old, next) {
+   			return unsafe.Pointer(node)
+   		}
+   	}
+   }
+   
+   func trygetfull() *workbuf {
+       b := (*workbuf)(work.full.pop())
+       if b != nil {
+          b.checknonempty()
+          return b
+       }
+       return b
+   }
+   ```
+
+
+
+#### 4.4.5 三色标记的实现
+
+![](../image/go/gc/gc_10.png) 
+
+GC 的标记流程基于三色标记法实现，在代码层面，黑、灰、白这三种颜色是如何实现的？
+
+在内存模型和分配机制中，每个对象都有自己从属的 mspan ，在 mspan 中，有着两个 bitmap 存储 着每个对象大小的内存的状态信息：
+
+* allocBits：标识内存的状态，一个 bit 为对应一个 object 的内存块，值为 1 代表已使用；值为 0 代表未使用
+* gcmarkBits：只在 GC 期间使用。值为 1 代表占用该内存块的对象被标记存活
+
+
+
+在垃圾清扫过程中，并不是真正将内存回收，而是在每个 mspan 中使用 gcmarkBits 对 allocBits 进行覆盖。在新分配对象时，当感知到 mspan 的 allocBits 中，某个对象槽位 bit 位值为 0，则会将其视为空闲内存进行使用，其本质上就是一个覆盖操作。
+
+
+
+```go
+type mspan struct {
+	// ...
+	allocBits  *gcBits
+	gcmarkBits *gcBits
+	// ...
+}
+
+type gcBits struct {
+	_ sys.NotInHeap
+	x uint8
+}
+```
+
+
+
+在了解 bitmap 之后，三色标识如何实现：
+
+* 黑色：对象在 mspan.gcmarkBits 中 bit 位值位 1，且对象已经离开灰对象缓存队列
+* 灰色：对象在 mspan.gcmarkBits 中 bit 位值位 1，且对象仍处于灰对象缓存队列
+* 白色：对象在 mspan.gcmarkBits 中 bit  位值为 0
+
+
+
+在上述的基础设置后，代码如何实现：
+
+* 扫描根对象，将 gcmarkBits 中的 bit 位置 1，并添加到灰对象缓存队列
+* 依次从灰对象缓存队列中取出灰对象，将其指向对象的 mspan.gcmarkBits 的 bit 位置 1 并添加到灰对象缓存队列中
+
+
+
+#### 4.4.6 中止标记协程
+
+在 gcDrain 函数中，针对分时模式 fractional 和 空闲模式 idle ，会设定 check 函数，在循环扫描的过程中检测是否需要中断当前标记协程。
+
+```go
+func gcDrain(gcw *gcWork, flags gcDrainFlags) {
+	// ...
+    
+	var check func() bool
+	if flags&(gcDrainIdle|gcDrainFractional) != 0 {
+		checkWork = initScanWork + drainCheckThreshold
+		if idle {
+			check = pollWork
+		} else if flags&gcDrainFractional != 0 {
+			check = pollFractionalWorkerExit
+		}
+	}
+
+	if work.markrootNext < work.markrootJobs {
+		for !(gp.preempt && (preemptible || sched.gcwaiting.Load())) {
+            
+			// ...
+            
+			if check != nil && check() {
+				goto done
+			}
+		}
+	}
+
+	// Drain heap marking jobs.
+	// Stop if we're preemptible or if someone wants to STW.
+	for !(gp.preempt && (preemptible || sched.gcwaiting.Load())) {
+        
+		// ...
+	
+		if gcw.heapScanWork >= gcCreditSlack {
+			// ...
+			if checkWork <= 0 {
+				checkWork += drainCheckThreshold
+				if check != nil && check() {
+					break
+				}
+			}
+		}
+	}
+
+done:
+	// ...
+}
+```
+
+对于分时模式的 check 函数是 pollFractionalWorkerExit ，若当前标记协程执行的时间比例大于 1.2 倍的 fractionalUtilizationGoal 阈值，就会中止标记协程。
+
+```go
+func pollFractionalWorkerExit() bool {
+	
+	now := nanotime()
+	delta := now - gcController.markStartTime
+	if delta <= 0 {
+		return true
+	}
+	p := getg().m.p.ptr()
+	selfTime := p.gcFractionalMarkTime + (now - p.gcMarkWorkerStartTime)
+	return float64(selfTime)/float64(delta) > 1.2*gcController.fractionalUtilizationGoal
+}
+```
+
+对于空闲模式的 check 函数是 pollWork，判断全队 g  队列，本地 P 队列是否存在就绪的 g ，或者存在就绪的网络协程，就会对当前标记协程进行中断。
+
+```go
+func pollWork() bool {
+	if sched.runqsize != 0 {
+		return true
+	}
+	p := getg().m.p.ptr()
+	if !runqempty(p) {
+		return true
+	}
+	if netpollinited() && netpollWaiters.Load() > 0 && sched.lastpoll.Load() != 0 {
+		if list := netpoll(0); !list.empty() {
+			injectglist(&list)
+			return true
+		}
+	}
+	return false
+}
+```
+
+#### 4.4.7 扫描根对象
+
+在 gcDrain 函数正式开始循环扫描前，还会对根对象进行扫描标记。根对象包括如下：
+
+* .base 段内存中的未初始化全局变量
+* .data 段内存中的已初始化变量
+* span 中的 finalizer
+* 各种协程栈
+
+
+
+根对象扫描函数是 markroot ：
+
+```go
+func markroot(gcw *gcWork, i uint32, flushBgCredit bool) int64 {
+	var workDone int64
+	var workCounter *atomic.Int64
+	switch {
+    // 处理已初始化的变量
+	case work.baseData <= i && i < work.baseBSS:
+		workCounter = &gcController.globalsScanWork
+		for _, datap := range activeModules() {
+			workDone += markrootBlock(datap.data, datap.edata-datap.data, datap.gcdatamask.bytedata, gcw, int(i-work.baseData))
+		}
+	// 处理未初始化的全局变量
+	case work.baseBSS <= i && i < work.baseSpans:
+		workCounter = &gcController.globalsScanWork
+		for _, datap := range activeModules() {
+			workDone += markrootBlock(datap.bss, datap.ebss-datap.bss, datap.gcbssmask.bytedata, gcw, int(i-work.baseBSS))
+		}
+	// 处理 finalizer 队列
+	case i == fixedRootFinalizers:
+		for fb := allfin; fb != nil; fb = fb.alllink {
+			cnt := uintptr(atomic.Load(&fb.cnt))
+			scanblock(uintptr(unsafe.Pointer(&fb.fin[0])), cnt*unsafe.Sizeof(fb.fin[0]), &finptrmask[0], gcw, nil)
+		}
+	// 释放已终止的 g 栈
+	case i == fixedRootFreeGStacks:
+		// Switch to the system stack so we can call
+		// stackfree.
+		systemstack(markrootFreeGStacks)
+	// 扫描 mspan 中的 special
+	case work.baseSpans <= i && i < work.baseStacks:
+		// mark mspan.specials
+		markrootSpans(gcw, int(i-work.baseSpans))
+
+	default:
+		// ...
+        // 获取需要扫描的 g
+		gp := work.stackRoots[i-work.baseStacks]
+
+		// 切换 g0 执行工作，扫描 g 的栈
+		systemstack(func() {
+			// ...
+            // 栈扫描
+			workDone += scanstack(gp, gcw)
+            //
+			
+		})
+	}
+	// ...
+	return workDone
+}
+```
+
+
+
+栈扫描链路：scanstack -> scanframeworker -> scanblock
+
+```go
+func scanstack(gp *g, gcw *gcWork) int64 {
+	
+	// ...
+
+	// Scan the stack. Accumulate a list of stack objects.
+	var u unwinder
+	for u.init(gp, 0); u.valid(); u.next() {
+		scanframeworker(&u.frame, &state, gcw)
+	}
+	// ...
+	return int64(scannedSize)
+}
+```
+
+```go
+func scanframeworker(frame *stkframe, state *stackScanState, gcw *gcWork) {
+   	// ...
+
+    locals, args, objs := frame.getStackMap(&state.cache, false)
+
+    // 扫描局部变量
+    if locals.n > 0 {
+       size := uintptr(locals.n) * goarch.PtrSize
+       scanblock(frame.varp-size, size, locals.bytedata, gcw, state)
+    }
+
+    // 扫描函数参数
+    if args.n > 0 {
+       scanblock(frame.argp, uintptr(args.n)*goarch.PtrSize, args.bytedata, gcw, state)
+    }
+
+    // ...
+}
+```
+
+不论是全局扫描还是栈扫描，底层都会调用 scanblock 。在扫描时，会通过位图 ptrmask 辅助加速流程，在 ptrmask 当中，每个 bit 位对应了一个指针大小（8B）的位置的标识信息，指明当前位置是否是指针，若非指针，则直接跳过扫描。
+
+```go
+func scanblock(b0, n0 uintptr, ptrmask *uint8, gcw *gcWork, stk *stackScanState) {
+    
+    b := b0
+    n := n0
+	// 遍历待扫描的地址
+    for i := uintptr(0); i < n; {
+       // 找到 bitmap 对应的 byte. ptrmask 辅助标识了 .data 一个指针的大小，bit 位为 1 代表当前位置是一个指针
+       bits := uint32(*addb(ptrmask, i/(goarch.PtrSize*8)))
+       // 非指针，跳过
+       if bits == 0 {
+          i += goarch.PtrSize * 8
+          continue
+       }
+       for j := 0; j < 8 && i < n; j++ {
+          if bits&1 != 0 {
+             // Same work as in scanobject; see comments there.
+             p := *(*uintptr)(unsafe.Pointer(b + i))
+             if p != 0 {
+                if obj, span, objIndex := findObject(p, b, i); obj != 0 {
+                   greyobject(obj, b, i, span, gcw, objIndex)
+                } else if stk != nil && p >= stk.stack.lo && p < stk.stack.hi {
+                   stk.putPtr(p, false)
+                }
+             }
+          }
+          bits >>= 1
+          i += goarch.PtrSize
+       }
+    }
+}
+```
+
+#### 4.4.8 扫描普通对象
 
