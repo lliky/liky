@@ -1574,3 +1574,84 @@ func scanblock(b0, n0 uintptr, ptrmask *uint8, gcw *gcWork, stk *stackScanState)
 
 #### 4.4.8 扫描普通对象
 
+gcDrain 函数中，会持续从灰对象缓存队列中取出灰对象，然后采用 scanobject 方法进行处理。
+
+```go
+func gcDrain(gcw *gcWork, flags gcDrainFlags) {
+    
+    // ...
+  
+  	// 遍历队列，进行对象标记
+    for !(gp.preempt && (preemptible || sched.gcwaiting.Load())) {
+       
+			 // 尝试从 p 本地队列获取灰色对象，无锁
+       b := gcw.tryGetFast()
+       if b == 0 {
+          // 尝试从全局队列获取灰色对象
+          b = gcw.tryGet()
+          if b == 0 {
+             // 刷新写屏障缓存
+             wbBufFlush()
+             b = gcw.tryGet()
+          }
+       }
+       if b == 0 {
+          // 无对象标记
+          break
+       }
+       // 进行对象标记，并顺延指针进行后续对象扫描
+       scanobject(b, gcw)
+
+       // ...
+    }
+
+done:
+    // ...
+}
+```
+
+
+
+scanobject 函数遍历当前灰对象中的指针，依次调用 greyobject 方法将其指向的对象进行置灰操作。
+
+```go
+func scanobject(b uintptr, gcw *gcWork) {
+    
+  	// ...
+  
+  	// 通过地址映射到所属页
+  	// 通过 heapArena 中的映射信息，从页映射到所属的 mspan
+    s := spanOfUnchecked(b)
+    n := s.elemsize
+    
+  	// ...
+
+  	// 扫描后续对象
+    hbits := heapBitsForAddr(b, n)
+    var scanSize uintptr
+    for {
+       var addr uintptr
+       // 通过 heapArena 中的 bitmap 信息，加速遍历
+       if hbits, addr = hbits.nextFast(); addr == 0 {
+          if hbits, addr = hbits.next(); addr == 0 {
+             break
+          }
+       }
+
+       
+       scanSize = addr - b + goarch.PtrSize
+
+       
+       obj := *(*uintptr)(unsafe.Pointer(addr))
+
+       
+       if obj != 0 && obj-b >= n {
+          // 遍历到的对象，将其置灰，并添加到队列中，等待后续扫描
+          if obj, span, objIndex := findObject(obj, b, addr-b); obj != 0 {
+             greyobject(obj, b, addr-b, span, gcw, objIndex)
+          }
+       }
+    }
+    // ...
+}
+```
