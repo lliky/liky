@@ -1655,3 +1655,236 @@ func scanobject(b uintptr, gcw *gcWork) {
     // ...
 }
 ```
+
+
+
+#### 4.4.9 对象置灰
+
+对象置灰操作是函数 greyobject，分为两步：
+
+* 标志置位 1
+* 将对象加入到 p 的本地灰对象队列
+
+```go
+func greyobject(obj, base, off uintptr, span *mspan, gcw *gcWork, objIndex uintptr) {
+    // ...
+    
+    // 在其所属的 mspan 中，将对应位置的 gcMark bitmap 置为 1
+    mbits.setMarked()
+
+    // 将对象加入本地灰对象队列
+    if !gcw.putFast(obj) {
+       gcw.put(obj)
+    }
+}
+```
+
+
+
+#### 4.4.10 新分配对象置黑
+
+GC 期间新分配的对象，会被直接置黑，和混合写屏障说的一样
+
+```go
+func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
+	// ...
+    
+    if gcphase != _GCoff {
+		gcmarknewobject(span, uintptr(x), size)
+	}
+    // ...
+}
+```
+
+```go
+func gcmarknewobject(span *mspan, obj, size uintptr) {
+    // ....
+    
+    // 标记对象
+    objIndex := span.objIndex(obj)
+    span.markBitsForIndex(objIndex).setMarked()
+
+    // ...
+}
+```
+
+
+
+### 4.5 辅助标记
+
+#### 4.5.1 辅助标记策略
+
+在并发标记阶段，由于用户协程和标记协程共同工作，在极端的场景下存在一个问题：若用户协程分配对象快于标记协程标记对象的速度，这样标记阶段就不能结束？
+
+为了规避这问题，Golang GC 引入辅助标记策略，建立一个兜底的机制：在最坏的情况下，一个用户协程分配了多少内存，就需要完成对应量的标记任务。
+
+
+
+在每个用户协程 g 中，有一个字段 gcAssistBytes ，象征 GC 期间可分配内存资产的概念，每个 g 在 GC 期间辅助标记了多大的内存空间，就会获得对应大小的资产，使得其 GC 期间能够分配对应大小的内存进行对象创建。
+
+```go
+type g struct {
+	// ...
+	gcAssistBytes int64
+}
+```
+
+```go
+func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
+    // ...
+	assistG := deductAssistCredit(size) 
+    // ...
+}
+
+func deductAssistCredit(size uintptr) *g {
+	var assistG *g
+	if gcBlackenEnabled != 0 {
+		
+		assistG = getg()
+		if assistG.m.curg != nil {
+			assistG = assistG.m.curg
+		}
+		// 每个 g 都有资产
+		assistG.gcAssistBytes -= int64(size)
+
+		if assistG.gcAssistBytes < 0 {
+			gcAssistAlloc(assistG)
+		}
+	}
+	return assistG
+}
+```
+
+#### 4.5.2 辅助标记执行
+
+由于各对象中，可能存在部分不包含指针的字段，这部分字段是无需进行扫描的。因此真正需要扫描的内存量会小于实际的内存大小，两者之间的比例通过 gcController.assistWorkPerByte 进行记录。
+
+于是当一个用户协程在 GC 期间需要分配 M 大小的新对象时，实际上需要完成的辅助标记量应该为 assistWorkPerByte*M 。
+
+辅助标记逻辑位于 gcAssistAlloc 方法. 在该方法中，会先尝试从公共资产池 gcController.bgScanCredit 中偷取资产，倘若资产仍然不够，则会通过 systemstack 方法切换至 g0，并在 gcAssistAlloc1 方法内调用 gcDrainN 方法参与到并发标记流程当中.
+
+```go
+func gcAssistAlloc(gp *g) {
+	// ...
+    
+    // 计算待完成的任务量
+	assistWorkPerByte := gcController.assistWorkPerByte.Load()
+	assistBytesPerWork := gcController.assistBytesPerWork.Load()
+	debtBytes := -gp.gcAssistBytes
+	scanWork := int64(assistWorkPerByte * float64(debtBytes))
+	if scanWork < gcOverAssistWork {
+		scanWork = gcOverAssistWork
+		debtBytes = int64(assistBytesPerWork * float64(scanWork))
+	}
+
+	// 尝试从全局的可用资产中偷取
+	bgScanCredit := gcController.bgScanCredit.Load()
+	stolen := int64(0)
+	if bgScanCredit > 0 {
+		if bgScanCredit < scanWork {
+			stolen = bgScanCredit
+			gp.gcAssistBytes += 1 + int64(assistBytesPerWork*float64(stolen))
+		} else {
+			stolen = scanWork
+			gp.gcAssistBytes += debtBytes
+		}
+		gcController.bgScanCredit.Add(-stolen)
+
+		scanWork -= stolen
+		
+        // 全局资产够用，则无需辅助标记，直接返回
+		if scanWork == 0 {
+			if traced {
+				traceGCMarkAssistDone()
+			}
+			return
+		}
+	}
+
+	// 切换到 g0，开始执行标记任务
+	systemstack(func() {
+		gcAssistAlloc1(gp, scanWork)
+	})
+	// 辅助标记完成
+	completed := gp.param != nil
+	gp.param = nil
+	if completed {
+		gcMarkDone()
+	}
+
+	// ...
+}
+```
+
+### 4.6 标记中止
+
+| 方法                  | 文件                | 作用                         |
+| --------------------- | ------------------- | ---------------------------- |
+| gcBgMarkWorker        | runtime/mgc.go      | 标记协程主方法               |
+| gcMarkDone            | runtime/mgc.go      | 所有标记协程完成后处理       |
+| stopTheWorldWithSema  | runtime/proc.go     | 停止所有用户协程             |
+| gcMarkTermination     | runtime/mgc.go      | 进入标记终止阶段             |
+| gcSweep               | runtime/mgc.go      | 唤醒后台清扫协程             |
+| sweepone              | runtime/mgcsweep.go | 每次清扫一个mspan            |
+| sweepLocked.sweep     | runtime/mgcsweep.go | 完成mspan中的bitmap更新      |
+| startTheWorldWithSema | runtime/proc.go     | 将所有用户协程恢复为可运行态 |
+
+#### 4.6.1 标记完成
+
+在并发标记阶段的 gcBgMarkWorker 函数中，当最后一个标记协程完成任务后，会调用 gcMarkDone  ，开始执行并发标记后处理的逻辑
+
+```go
+func gcBgMarkWorker() {
+    // ...
+	if incnwait == work.nproc && !gcMarkWorkAvailable(nil) {
+        releasem(node.m.ptr())
+        node.m.set(nil)
+
+        gcMarkDone()
+    }
+}
+```
+
+
+
+gcMarkDone 函数中，会遍历所有 P 的写屏障缓存，查看是否存在因屏障机制遗留的灰色对象，如果有，则会退出 gcMarkDone ，回退到 gcBgMarkWorker 的主循环中，继续完成标记任务。
+
+若写屏障中也没有遗留的灰对象，此时会调用 STW 停止世界，并调用 gcMarkTermination 进入标记终止阶段。
+
+```go
+func gcMarkDone() {
+    // ...
+top:
+    // ...
+    
+    // 切换到 g0
+    gcMarkDoneFlushed = 0
+    systemstack(func() {
+       gp := getg().m.curg
+       casGToWaiting(gp, _Grunning, waitReasonGCMarkTermination)
+       forEachP(func(pp *p) {
+           // 释放写屏障缓存，可能有新的待标记任务产生
+          wbBufFlush1(pp)
+       })
+       casgstatus(gp, _Gwaiting, _Grunning)
+    })
+	// 若有新的标记对象待处理，则回到 top ，然后退回到并发标记阶段
+    if gcMarkDoneFlushed != 0 {
+       semrelease(&worldsema)
+       goto top
+    }
+
+    // ...
+    
+    // 正式进入标记完成阶段，STW
+    systemstack(func() { stopTheWorldWithSema(stwGCMarkTerm) })
+    
+    // ...
+    
+    // 在 STW 状态下，进入标记终止阶段
+    gcMarkTermination()
+}
+```
+
+#### 4.6.2 标记终止
+
