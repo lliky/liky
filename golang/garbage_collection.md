@@ -1888,3 +1888,318 @@ top:
 
 #### 4.6.2 标记终止
 
+gcMarkTermination 几个核心步骤：
+
+* 设置 GC 进入标记终止阶段
+* 切换至 g0，设置 GC 进入标记关闭阶段
+* 切换至 g0，调用 setGCPhase 方法，唤醒后台清扫协程，执行标记清扫工作
+* 切换至 g0，调用 gcControllerCommit 方法，设置下次 GC  的内存阈值
+* 切换至 g0，重启世界
+
+```go
+func gcMarkTermination() {
+    // 设置 GC 阶段进入标记终止阶段
+    setGCPhase(_GCmarktermination)
+	
+    // ...
+    
+    systemstack(func() {
+       // 设置 GC 阶段进入关闭阶段
+       setGCPhase(_GCoff)
+       // 开始执行标记清扫工作
+       gcSweep(work.mode)
+    })
+
+    // ...
+    // 提交下次 GC 的内存阈值
+    systemstack(gcControllerCommit)
+
+    // ...
+
+    systemstack(func() { startTheWorldWithSema() })
+
+    // ...
+}
+```
+
+#### 4.6.3 标记清扫
+
+gcSweep 最核心的就是调用 ready 方法，唤醒了因为 gopark 操作陷入被动阻塞的清扫协程 sweep.g 。
+
+```go
+func gcSweep(mode gcMode) {
+    // ...
+    
+    // 唤醒后台清扫协程
+    lock(&sweep.lock)
+    if sweep.parked {
+       sweep.parked = false
+       ready(sweep.g, 0, true)
+    }
+    unlock(&sweep.lock)
+}
+```
+
+是何时创建 sweep.g 的？又是什么是否 park 的？
+
+在 runtime 的 main 函数
+
+```go
+func main() {
+	// ...
+	gcenable()
+	//...
+}
+```
+
+```go
+func gcenable() {
+    // ...
+    go bgsweep(c)
+    <-c
+    // ...
+}
+```
+
+
+
+通过代码，在异步启动 bgsweep 之后，会首先将协程 gopark 挂起，等待被唤醒。
+
+在标记关闭阶段后被唤醒，会进入 for 循环，每一轮完成一个 mspan 的清扫工作，之后调用 goschedIfBusy 主动让渡 P 的执行权，采用懒清扫的方式逐步推进标记清扫流程。
+
+> 因为会周期性触发 GC，所以不会导致 mspan 的堆积。
+
+```go
+func bgsweep(c chan int) {
+    // ...
+    
+    c <- 1
+    // 执行 gopark 操作，等待 GC 并发标记阶段完成后，唤醒当前协程
+    goparkunlock(&sweep.lock, waitReasonGCSweepWait, traceBlockGCSweep, 1)
+
+    for {
+       // 每次清扫一个 mspan 后，如果繁忙，会发起主动让渡
+       for sweepone() != ^uintptr(0) {
+          sweep.nbgsweep++
+          nSwept++
+          if nSwept%sweepBatchSize == 0 {
+             goschedIfBusy()
+          }
+       }
+        
+       // ...
+        
+       sweep.parked = true
+       // 清扫完成后，则继续 gopark 被动阻塞
+       goparkunlock(&sweep.lock, waitReasonGCSweepWait, traceBlockGCSweep, 1)
+    }
+}
+```
+
+sweepone 函数每次清扫一个 mspan，清扫逻辑位于 sweepLocked.sweep 方法中，其核心就是将 mspan 的 gcmarkBits 赋给 allocBits，新建新的 gcmarkBits 。
+
+```go
+func sweepone() uintptr {
+    
+    sl := sweep.active.begin()
+    
+    npages := ^uintptr(0)
+    var noMoreWork bool
+    for {
+       s := mheap_.nextSpanForSweep()
+       
+       // ...
+       
+       if s, ok := sl.tryAcquire(s); ok {
+          
+          npages = s.npages
+          if s.sweep(false) {
+             mheap_.reclaimCredit.Add(npages)
+          } else {
+             npages = 0
+          }
+          break
+       }
+    }
+    sweep.active.end(sl)
+
+    // ...
+    return npages
+}
+```
+
+```go
+func (sl *sweepLocked) sweep(preserve bool) bool {
+    // ...
+
+    s.allocBits = s.gcmarkBits
+    s.gcmarkBits = newMarkBits(s.nelems)
+	// ...
+}
+```
+
+#### 4.6.4 设置下轮 GC 阈值
+
+在 gcMarkTermination 函数中，通过调用 g0 调用 gcControllerCommit ，完成下轮触发 GC 的内存阈值的设定。
+
+```go
+func gcMarkTermination() {
+	// ...
+    提交下轮 GC 内存阈值
+    systemstack(gcControllerCommit)
+    // ...
+}
+```
+
+```go
+func gcControllerCommit() {
+    assertWorldStoppedOrLockHeld(&mheap_.lock)
+
+    gcController.commit(isSweepDone())
+
+    // ...
+}
+```
+
+
+
+在 gcControllerState.commit 方法中，会读取 gcPercent 字段值作为触发 GC 的堆使用内存增长比例，结合当前内存使用情况，推算出下轮 GC 内存阈值，设置到 gcPercentHeapGoal  当中。
+
+```go
+func (c *gcControllerState) commit(isSweepDone bool) {
+    // ...
+    gcPercentHeapGoal := ^uint64(0)
+    // gcPercent 可以通过环境变量 GOGC 注入，默认 100
+    if gcPercent := c.gcPercent.Load(); gcPercent >= 0 {
+       gcPercentHeapGoal = c.heapMarked + (c.heapMarked+c.lastStackScan.Load()+c.globalsScan.Load())*uint64(gcPercent)/100
+    }
+    
+    // ...
+    c.gcPercentHeapGoal.Store(gcPercentHeapGoal)
+
+    // ...
+}
+```
+
+在新一轮尝试触发 GC 的过程中，对于 gcTriggerHeap 类型触发事件，会调用 gcController.trigger 读取到 gcPercentHeapGoal  内存阈值，进行触发条件的判断
+
+```go
+func (t gcTrigger) test() bool {
+    switch t.kind {
+    case gcTriggerHeap:
+       trigger, _ := gcController.trigger()
+       return gcController.heapLive.Load() >= trigger
+    // ...
+    }
+    return true
+}
+```
+
+### 4.7 系统驻留内存清理
+
+Golang 进程从操作系统主内存中申请到堆中进行复用的内存部分称为驻留内存（Resident Set Size, RSS）。RSS 应遵守实际使用情况进行动态缩容，归还给操作系统。
+
+Golang 运行时会异步启动一个回收协程，以趋近于 1 % CPU 使用率作为目标，持续对 RSS 中的空闲内存进行回收，因此在大部分时间里，该协程处于睡眠状态。如果花费时间过多去清理，那么睡眠时间也因相应增加。
+
+#### 4.7.1 回收协程启动
+
+在 runtime包下的main函数中，会异步启动回收协程bgscavenge
+
+```go
+func main() {
+    // ...
+    gcenable()
+    // ...
+}
+```
+
+```go
+func gcenable() {
+   // ...
+    go bgscavenge(c)
+    <-c
+   // ...
+}
+```
+
+#### 4.7.2 执行频率控制
+
+通过 for + sleep 的形式，控制回收协程的执行频率在 CPU 的 1% 左右
+
+```go
+func bgscavenge(c chan int) {
+    scavenger.init()
+
+    c <- 1
+    scavenger.park()
+
+    for {
+       released, workTime := scavenger.run()
+       if released == 0 {
+          scavenger.park()
+          continue
+       }
+       mheap_.pages.scav.releasedBg.Add(released)
+       scavenger.sleep(workTime)
+    }
+}
+```
+
+#### 4.7.3 回收空闲内存
+
+调用链：scavengerState.run() -> pageAlloc.scavenge -> pageAlloc.scavengeOne-> sysUnused 最后系统回收。
+
+```go
+func (s *scavengerState) run() (released uintptr, worked float64) {
+    // ...
+
+    for worked < minScavWorkTime {
+       
+       // ...
+       
+       r, duration := s.scavenge(scavengeQuantum)
+		// ...
+       
+    }
+    // ...
+}
+```
+
+```go
+func (p *pageAlloc) scavenge(nbytes uintptr, shouldStop func() bool, force bool) uintptr {
+    released := uintptr(0)
+    for released < nbytes {
+       // ...
+       systemstack(func() {
+          released += p.scavengeOne(ci, pageIdx, nbytes-released)
+       })
+       // ...
+    }
+    return released
+}
+```
+
+```go
+func (p *pageAlloc) scavengeOne(ci chunkIdx, searchIdx uint, max uintptr) uintptr {
+    // ...
+    
+    if p.summary[len(p.summary)-1][ci].max() >= uint(minPages) {
+       
+       base, npages := p.chunkOf(ci).findScavengeCandidate(searchIdx, minPages, maxPages)
+
+       if npages != 0 {
+          if !p.test {
+             // ...
+             sysUnused(unsafe.Pointer(addr), uintptr(npages)*pageSize)
+
+             // ...
+          }
+
+          // ...
+       }
+    }
+    // ...
+
+    return 0
+}
+```
