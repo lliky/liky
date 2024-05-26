@@ -1,6 +1,6 @@
 package sort
 
-func Bubble_sort(arr []int) {
+func BubbleSort(arr []int) {
 	if len(arr) < 2 {
 		return
 	}

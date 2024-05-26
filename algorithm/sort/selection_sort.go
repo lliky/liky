@@ -1,6 +1,6 @@
 package sort
 
-func Selection_sort(arr []int) {
+func SelectionSort(arr []int) {
 	if len(arr) < 2 {
 		return
 	}
@@ -11,10 +11,6 @@ func Selection_sort(arr []int) {
 				index = j
 			}
 		}
-		swap(arr, i, index)
+		swap1(arr, i, index)
 	}
-}
-
-func swap(arr []int, i, j int) {
-	arr[i], arr[j] = arr[j], arr[i]
 }
