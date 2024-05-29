@@ -22,3 +22,8 @@ func TestMergeSort(t *testing.T) {
 	}
 	t.Logf("success")
 }
+
+func TestSumSmall(t *testing.T) {
+	nums := []int{1, 3, 4, 2, 5}
+	t.Logf("result is: %d\n", SumSmall(nums))
+}
