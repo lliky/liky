@@ -9,6 +9,7 @@ func swap1(arr []int, i, j int) {
 	arr[i], arr[j] = arr[j], arr[i]
 }
 
+// i, j 不能指向同一个内存地址，否则变为 0
 func swap2(arr []int, i, j int) {
 	arr[i] = arr[i] ^ arr[j]
 	arr[j] = arr[i] ^ arr[j]
