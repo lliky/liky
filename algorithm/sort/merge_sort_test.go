@@ -27,3 +27,9 @@ func TestSumSmall(t *testing.T) {
 	nums := []int{1, 3, 4, 2, 5}
 	t.Logf("result is: %d\n", SumSmall(nums))
 }
+
+func TestReversePair(t *testing.T) {
+	nums := []int{1, 3, 2, 5, 0}
+	t.Logf("result is: %d\n", ReversePair(nums))
+	t.Logf("nums is : %v", nums)
+}
