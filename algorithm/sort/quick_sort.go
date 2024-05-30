@@ -105,3 +105,5 @@ func partition(nums []int, l, r int) []int {
 	swap1(nums, r, more)
 	return []int{less + 1, more}
 }
+
+// 时间复杂度O(N*logN) ，空间复杂度O(logN)
