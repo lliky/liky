@@ -53,3 +53,37 @@ func DemoSelect(nums []int) {
 		nums[i], nums[minIndex] = nums[minIndex], nums[i]
 	}
 }
+
+func DemoQuickSort(nums []int) {
+	if len(nums) < 2 {
+		return
+	}
+	demoQuickSort(nums, 0, len(nums)-1)
+}
+
+func demoQuickSort(nums []int, l, r int) {
+	if l >= r {
+		return
+	}
+	p := demoPartition(nums, l, r)
+	demoQuickSort(nums, l, p[0]-1)
+	demoQuickSort(nums, p[1]+1, r)
+}
+
+func demoPartition(nums []int, l, r int) []int {
+	less, more := l-1, r
+	for l < more {
+		if nums[l] < nums[r] {
+			less++
+			swap2(nums, less, l)
+			l++
+		} else if nums[l] > nums[r] {
+			more--
+			swap2(nums, l, more)
+		} else {
+			l++
+		}
+	}
+	swap2(nums, more, r) // 把最后一个换一下
+	return []int{less + 1, more}
+}
