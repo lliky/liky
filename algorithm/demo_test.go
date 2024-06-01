@@ -12,3 +12,7 @@ func TestFib(t *testing.T) {
 func TestFib2(t *testing.T) {
 	fmt.Println(Fib2(45, 0, 1))
 }
+
+func TestA(t *testing.T) {
+	fmt.Println(-1 / 2)
+}

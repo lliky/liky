@@ -1,6 +1,7 @@
 package sort
 
 import (
+	"fmt"
 	"sort"
 	"testing"
 )
@@ -54,4 +55,18 @@ func TestDemoQuickSort(t *testing.T) {
 		}
 	}
 	t.Logf("success")
+}
+
+func TestA(t *testing.T) {
+	heap := NewPriorityQueue()
+	heap.Add(1)
+	heap.Add(4)
+	fmt.Println(heap.Pop())
+	heap.Add(2)
+	heap.Add(5)
+	heap.Add(3)
+	heap.Add(7)
+	for !heap.IsEmpty() {
+		fmt.Println(heap.Pop())
+	}
 }
