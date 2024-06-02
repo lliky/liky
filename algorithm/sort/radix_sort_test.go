@@ -2,6 +2,7 @@ package sort
 
 import (
 	"fmt"
+	"sort"
 	"testing"
 )
 
@@ -14,7 +15,19 @@ func TestGetDigit(t *testing.T) {
 }
 
 func TestRadixSort(t *testing.T) {
-	num := []int{12, 16, 6, 100, 2333, 45}
-	RadixSort(num)
-	fmt.Println(num)
+	testTimes := 50000
+
+	for i := 0; i < testTimes; i++ {
+		arr1 := GenerateRandomArray(100, 100)
+		arr2 := make([]int, len(arr1))
+		copy(arr2, arr1)
+		RadixSort(arr1)
+		sort.Sort(SortArr{arr2})
+		if !isEqual(arr1, arr2) {
+			t.Logf("arr1: %v\n", arr1)
+			t.Logf("arr2: %v\n", arr2)
+			t.Fatalf("failed")
+		}
+	}
+	t.Logf("success")
 }
