@@ -70,3 +70,23 @@ func TestA(t *testing.T) {
 		fmt.Println(heap.Pop())
 	}
 }
+
+func TestDemoMaxBits(t *testing.T) {
+	nums := []int{1, 2, 3, -111}
+	fmt.Println(demoMaxBits(nums))
+}
+
+func TestDemoGetDigits(t *testing.T) {
+	a := 123409
+	fmt.Println(demoGetDigits(a, 1))
+	fmt.Println(demoGetDigits(a, 2))
+	fmt.Println(demoGetDigits(a, 3))
+	fmt.Println(demoGetDigits(a, 4))
+	fmt.Println(demoGetDigits(a, 5))
+	fmt.Println(demoGetDigits(a, 6))
+}
+func TestDemoRadix(t *testing.T) {
+	nums := []int{100, 17, 12, 12, 12, 15, 105}
+	RadixSort(nums)
+	fmt.Println(nums)
+}
