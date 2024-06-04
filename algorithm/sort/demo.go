@@ -1,5 +1,9 @@
 package sort
 
+import (
+	"math"
+)
+
 func DemoMergeSort(nums []int) {
 	demoProcess(nums, 0, len(nums)-1)
 }
@@ -86,4 +90,56 @@ func demoPartition(nums []int, l, r int) []int {
 	}
 	swap2(nums, more, r) // 把最后一个换一下
 	return []int{less + 1, more}
+}
+
+func DemoRadix(nums []int) {
+	radix := 10
+	digit := demoMaxBits(nums)
+	for d := 1; d <= digit; d++ { //最大位数，需要几进几出桶
+		count := make([]int, radix)
+		for i := 0; i < len(nums); i++ {
+			j := demoGetDigits(nums[i], d)
+			count[j]++
+		}
+		for i := 1; i < radix; i++ { // 前缀和
+			count[i] += count[i-1]
+		}
+		bucket := make([]int, len(nums))
+		for i := len(nums) - 1; i >= 0; i-- {
+			j := demoGetDigits(nums[i], d)
+			bucket[count[j]-1] = nums[i]
+			count[j]--
+		}
+		for i, v := range bucket {
+			nums[i] = v
+		}
+	}
+}
+
+func demoGetDigits(num, d int) int {
+	var v, c int
+	for num != 0 {
+		v = num % 10
+		num /= 10
+		c++
+		if c == d {
+			break
+		}
+	}
+	return v
+}
+
+func demoMaxBits(nums []int) int {
+	var max = math.MinInt
+	for _, v := range nums {
+		if max < v {
+			max = v
+		}
+	}
+	var res = 0
+	for max != 0 {
+		max /= 10
+		res++
+	}
+	return res
 }
