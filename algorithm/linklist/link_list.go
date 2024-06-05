@@ -66,6 +66,7 @@ func PrintLinkListCommonPart(head1, head2 *Node) {
 }
 
 // 3. 将两个升序链表合并为一个新的 升序 链表并返回。新链表是通过拼接给定的两个链表的所有节点组成的。
+// leetcode 21
 
 func MergeTwoLists(head1, head2 *Node) *Node {
 	cur1, cur2 := head1, head2
@@ -89,3 +90,73 @@ func MergeTwoLists(head1, head2 *Node) *Node {
 	}
 	return head.Next
 }
+
+// 4. 回文
+
+// IsPalindrome1 用栈
+func IsPalindrome1(head *Node) bool {
+	if head == nil || head.Next == nil {
+		return true
+	}
+	slow, fast := head, head
+	help := make([]*Node, 0)
+	for fast.Next != nil && fast.Next.Next != nil {
+		help = append(help, slow)
+		slow = slow.Next
+		fast = fast.Next.Next
+	}
+	if fast.Next != nil {
+		help = append(help, slow)
+	}
+	cur, i := slow.Next, len(help)-1
+	for cur != nil {
+		if cur.Val != help[i].Val {
+			return false
+		}
+		cur = cur.Next
+		i--
+	}
+	return true
+}
+
+func IsPalindrome2(head *Node) bool {
+	if head == nil || head.Next == nil {
+		return true
+	}
+	slow, fast := head, head
+	for fast.Next != nil && fast.Next.Next != nil {
+		slow = slow.Next
+		fast = fast.Next.Next
+	}
+	// reverse next
+	pre, cur := slow, slow.Next
+	pre.Next = nil
+	for cur != nil {
+		tmp := cur.Next
+		cur.Next = pre.Next
+		pre.Next = cur
+		cur = tmp
+	}
+	head.Print()
+	prev, next := head, slow.Next
+	for next != nil {
+		if prev.Val != next.Val {
+			return false
+		}
+		next = next.Next
+		prev = prev.Next
+	}
+	// recover list
+	pre, cur = slow, slow.Next
+	pre.Next = nil
+	for cur != nil {
+		tmp := cur.Next
+		cur.Next = pre.Next
+		pre.Next = cur
+		cur = tmp
+	}
+	head.Print()
+	return true
+}
+
+// 5.单链表按某值划分
