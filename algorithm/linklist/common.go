@@ -54,3 +54,7 @@ func (d *DoubleNode) Print() {
 	}
 	fmt.Println("************ end print ***********")
 }
+
+func swap(arr []*Node, i, j int) {
+	arr[i], arr[j] = arr[j], arr[i]
+}

@@ -1,6 +1,8 @@
 package linklist
 
-import "fmt"
+import (
+	"fmt"
+)
 
 // 1. 反转单向链表
 
@@ -160,3 +162,114 @@ func IsPalindrome2(head *Node) bool {
 }
 
 // 5.单链表按某值划分
+
+// PartitionByVal1 放到数组中，荷兰国旗
+func PartitionByVal1(head *Node, x int) *Node {
+	if head == nil || head.Next == nil {
+		return head
+	}
+	help := make([]*Node, 0)
+	for head != nil {
+		help = append(help, head)
+		head = head.Next
+	}
+	partition(help, x)
+	for i := 0; i < len(help)-1; i++ {
+		help[i].Next = help[i+1]
+	}
+	help[len(help)-1].Next = nil
+	return help[0]
+}
+
+func partition(nums []*Node, x int) {
+	left, right := -1, len(nums)
+	i := 0
+	for i < right {
+		if nums[i].Val < x {
+			left++
+			swap(nums, i, left)
+			i++
+		} else if nums[i].Val > x {
+			right--
+			swap(nums, i, right)
+		} else {
+			i++
+		}
+	}
+}
+
+func PartitionByVal2(head *Node, x int) *Node {
+	var sH, sT, mH, mT, lH, lT *Node
+	cur := head
+	for cur != nil {
+		if cur.Val < x {
+			if sH == nil {
+				sH = cur
+				sT = cur
+			} else {
+				sT.Next = cur
+				sT = sT.Next
+			}
+		} else if cur.Val > x {
+			if lH == nil {
+				lH = cur
+				lT = cur
+			} else {
+				lT.Next = cur
+				lT = lT.Next
+			}
+		} else {
+			if mH == nil {
+				mH = cur
+				mT = cur
+			} else {
+				mT.Next = cur
+				mH = lT.Next
+			}
+		}
+		cur = cur.Next
+	}
+	//  merge
+	if sH != nil && mH != nil && lH != nil {
+		sT.Next = mH
+		mT.Next = lH
+		lT.Next = nil
+		return sH
+	}
+	if sH == nil {
+		if mH == nil {
+			return lH
+		} else {
+			mT.Next = lH
+			if lT != nil {
+				lT.Next = nil
+			}
+			return mT
+		}
+	}
+	if mH == nil {
+		if sH == nil {
+			return lH
+		} else {
+			sT.Next = lH
+			if lT != nil {
+				lT.Next = nil
+			}
+			return sH
+		}
+	}
+	if lH == nil {
+		if sH == nil {
+			return mH
+		} else {
+			sT.Next = mH
+			if mT != nil {
+				mT.Next = nil
+			}
+			return sH
+		}
+	}
+	return nil
+}
+
+//

@@ -85,3 +85,28 @@ func TestIsPalindrome2(t *testing.T) {
 	//head1.Next.Next.Next.Next.Next = &Node{Val: 1}
 	fmt.Println(IsPalindrome2(head1))
 }
+
+func TestPartitionByVal1(t *testing.T) {
+	head := &Node{Val: 5}
+	head.Next = &Node{Val: 1}
+	//head.Next.Next = &Node{Val: 4}
+	//head.Next.Next.Next = &Node{Val: 3}
+	//head.Next.Next.Next.Next = &Node{Val: 2}
+	//head.Next.Next.Next.Next.Next = &Node{Val: 4}
+	//head.Next.Next.Next.Next.Next.Next = &Node{Val: 1}
+	//head.Next.Next.Next.Next.Next.Next.Next = &Node{Val: 2}
+	head.Print()
+	PartitionByVal1(head, 3).Print()
+}
+
+func TestPartitionByVal2(t *testing.T) {
+	head := &Node{Val: 5}
+	head.Next = &Node{Val: 1}
+	//head.Next.Next = &Node{Val: 4}
+	//head.Next.Next.Next = &Node{Val: 2}
+	//head.Next.Next.Next.Next = &Node{Val: 4}
+	//head.Next.Next.Next.Next.Next = &Node{Val: 1}
+	//head.Next.Next.Next.Next.Next.Next = &Node{Val: 2}
+	head.Print()
+	PartitionByVal2(head, 3).Print()
+}
