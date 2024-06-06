@@ -110,3 +110,35 @@ func TestPartitionByVal2(t *testing.T) {
 	head.Print()
 	PartitionByVal2(head, 3).Print()
 }
+
+func TestCopyRandomList1(t *testing.T) {
+	head := &RandomNode{Val: 7}
+	head.Next = &RandomNode{Val: 13}
+	head.Next.Next = &RandomNode{Val: 11}
+	head.Next.Next.Next = &RandomNode{Val: 10}
+	head.Next.Next.Next.Next = &RandomNode{Val: 1}
+
+	head.Next.Random = head
+	head.Next.Next.Random = head.Next.Next.Next.Next
+	head.Next.Next.Next.Random = head.Next.Next
+	head.Next.Next.Next.Next.Random = head
+	head.Print()
+	head = CopyRandomList1(head)
+	head.Print()
+}
+
+func TestCopyRandomList2(t *testing.T) {
+	head := &RandomNode{Val: 7}
+	head.Next = &RandomNode{Val: 13}
+	head.Next.Next = &RandomNode{Val: 11}
+	head.Next.Next.Next = &RandomNode{Val: 10}
+	head.Next.Next.Next.Next = &RandomNode{Val: 1}
+
+	head.Next.Random = head
+	head.Next.Next.Random = head.Next.Next.Next.Next
+	head.Next.Next.Next.Random = head.Next.Next
+	head.Next.Next.Next.Next.Random = head
+	head.Print()
+	head = CopyRandomList2(head)
+	head.Print()
+}

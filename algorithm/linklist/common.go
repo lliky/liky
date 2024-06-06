@@ -58,3 +58,28 @@ func (d *DoubleNode) Print() {
 func swap(arr []*Node, i, j int) {
 	arr[i], arr[j] = arr[j], arr[i]
 }
+
+type RandomNode struct {
+	Val    int
+	Next   *RandomNode
+	Random *RandomNode
+}
+
+func (head *RandomNode) Print() {
+	cur := head
+	fmt.Println("*********** begin print **********")
+	if cur == nil {
+		fmt.Println("The link list is empty")
+	}
+	for cur != nil {
+		fmt.Printf(" %d ", cur.Val)
+		cur = cur.Next
+		if cur != nil {
+			fmt.Printf("->")
+		} else {
+			fmt.Println()
+		}
+	}
+
+	fmt.Println("************ end print ***********")
+}

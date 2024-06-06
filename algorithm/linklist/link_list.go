@@ -272,4 +272,65 @@ func PartitionByVal2(head *Node, x int) *Node {
 	return nil
 }
 
-//
+//5.复制含有随机指针节点的链表
+
+// CopyRandomList1 用 hash 辅助空间
+func CopyRandomList1(head *RandomNode) *RandomNode {
+	if head == nil {
+		return head
+	}
+	cur := head
+	help := make(map[*RandomNode]*RandomNode)
+	for cur != nil {
+		node := &RandomNode{Val: cur.Val}
+		help[cur] = node
+		cur = cur.Next
+	}
+	cur = head
+	d := new(RandomNode)
+	pre := d
+	for cur != nil {
+		pre.Next = help[cur]
+		if cur.Random != nil {
+			pre.Next.Random = help[cur.Random]
+		}
+		cur = cur.Next
+		pre = pre.Next
+	}
+	return d.Next
+}
+
+func CopyRandomList2(head *RandomNode) *RandomNode {
+	if head == nil {
+		return head
+	}
+	cur := head
+	// copy new node
+	for cur != nil {
+		node := &RandomNode{Val: cur.Val}
+		node.Next = cur.Next
+		cur.Next = node
+		cur = node.Next
+	}
+	head.Print()
+	// copy random node
+	cur = head
+	for cur != nil {
+		if cur.Random != nil {
+			cur.Next.Random = cur.Random.Next
+		}
+		cur = cur.Next.Next
+	}
+	// delete old node
+	cur = head
+	d := new(RandomNode)
+	pre := d
+	for cur != nil {
+		pre.Next = cur.Next
+		cur.Next = cur.Next.Next
+		cur = cur.Next
+		pre = pre.Next
+	}
+	head.Print()
+	return d.Next
+}
