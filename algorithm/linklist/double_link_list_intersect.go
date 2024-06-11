@@ -61,7 +61,7 @@ func NoLoop(head1, head2 *Node) *Node {
 }
 
 // BothLoop 两个有环链表，返回第一个相交节点，如果不相交，返回 nil
-// 1. 各自成环
+// 1. 各自成
 // 2. 同一个入环点
 // 3. 不一样的入环点
 func BothLoop(head1, loop1, head2, loop2 *Node) *Node {

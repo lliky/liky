@@ -16,13 +16,33 @@ func (head *Node) Print() {
 	if head == nil {
 		fmt.Println("The link list is empty")
 	}
-	for head != nil {
-		fmt.Printf(" %d ", head.Val)
-		head = head.Next
-		if head != nil {
-			fmt.Printf("->")
-		} else {
-			fmt.Println()
+	node := findLoopNode(head)
+	if node == nil {
+		fmt.Println("The link list is no loop")
+		cur := head
+		for cur != nil {
+			fmt.Printf(" %d ", cur.Val)
+			cur = cur.Next
+			if cur != nil {
+				fmt.Printf("->")
+			} else {
+				fmt.Println()
+			}
+		}
+	} else {
+		fmt.Println("The link list is loop")
+		cur := head
+		var flag bool
+		for {
+			if cur == node {
+				flag = true
+			}
+			fmt.Printf(" %d ->", cur.Val)
+			cur = cur.Next
+			if flag && cur == node {
+				fmt.Printf("%d\n", cur.Val)
+				break
+			}
 		}
 	}
 
