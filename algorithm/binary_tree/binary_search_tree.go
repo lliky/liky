@@ -29,3 +29,45 @@ func processBST1(root *Node, preVal *int) bool {
 	}
 	return processBST1(root.Right, preVal)
 }
+
+type BSTData struct {
+	isBST bool
+	max   int
+	min   int
+}
+
+func BST2(root *Node) bool {
+	return processBST2(root).isBST
+}
+
+func processBST2(root *Node) *BSTData {
+	if root == nil {
+		return nil
+	}
+	left := processBST2(root.Left)
+	right := processBST2(root.Right)
+
+	isBst := true
+	if left != nil && (!left.isBST || left.max >= root.Val) {
+		isBst = false
+	}
+	if right != nil && (!right.isBST || right.min <= root.Val) {
+		isBst = false
+	}
+	maxV := root.Val
+	minV := root.Val
+	if left != nil {
+		maxV = max(maxV, left.max)
+		minV = min(minV, left.min)
+	}
+	if right != nil {
+		maxV = max(imaxV, right.max)
+		minV = min(minV, right.min)
+	}
+
+	return &BSTData{
+		isBST: isBst,
+		max:   maxV,
+		min:   minV,
+	}
+}
