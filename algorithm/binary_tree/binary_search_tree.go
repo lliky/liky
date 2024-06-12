@@ -61,7 +61,7 @@ func processBST2(root *Node) *BSTData {
 		minV = min(minV, left.min)
 	}
 	if right != nil {
-		maxV = max(imaxV, right.max)
+		maxV = max(maxV, right.max)
 		minV = min(minV, right.min)
 	}
 
@@ -70,4 +70,24 @@ func processBST2(root *Node) *BSTData {
 		max:   maxV,
 		min:   minV,
 	}
+}
+
+func BST3(root *Node) bool {
+	s := make([]*Node, 0)
+	var preVal = -1 << 63
+	for len(s) > 0 || root != nil {
+		if root != nil {
+			s = append(s, root)
+			root = root.Left
+		} else {
+			root = s[len(s)-1]
+			s = s[:len(s)-1]
+			if preVal >= root.Val {
+				return false
+			}
+			preVal = root.Val
+			root = root.Right
+		}
+	}
+	return true
 }
