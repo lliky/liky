@@ -3,7 +3,7 @@ package binary_tree
 // 最近公共祖先
 // leetcode 236
 
-func lowestCommonAncestor(root, p, q *Node) *Node {
+func LowestCommonAncestor(root, p, q *Node) *Node {
 	// 每个节点记录父节点
 	parentMap := make(map[*Node]*Node)
 	parentMap[root] = nil
