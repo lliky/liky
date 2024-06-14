@@ -39,3 +39,21 @@ func processLCA(root *Node, parentMap map[*Node]*Node) {
 		processLCA(root.Right, parentMap)
 	}
 }
+
+func LCA1(root, p, q *Node) *Node {
+	if p == root || q == root || root == nil {
+		return root
+	}
+	left := LCA1(root.Left, p, q)
+	right := LCA1(root.Right, p, q)
+	if left != nil && right != nil {
+		return root
+	}
+	if left != nil || right != nil {
+		if left != nil {
+			return left
+		}
+		return right
+	}
+	return nil
+}

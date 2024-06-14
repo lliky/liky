@@ -57,8 +57,10 @@
 3. 给定两个二叉树的节点 node1 和 node2，找到他们的最低公共祖先节点
    * leetcode 236
 4. 在二叉树中找到一个节点的后继节点
-   * x  有右树的时候，右树最左节点
-   * x 无右树的时候，往上的左孩子
+   1. leetcode 285 
+   2. https://leetcode.cn/problems/successor-lcci/description/
+   3. x  有右树的时候，右树最左节点
+   4. x 无右树的时候，往上的左孩子
 5. 二叉树的序列化和反序列化
    * leetcode 297
 6. 打印折痕
