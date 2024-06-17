@@ -9,7 +9,7 @@ func TestBCT(t *testing.T) {
 	t.Parallel()
 	testCases := []struct {
 		name   string
-		f      func() *Node
+		f      func() *TreeNode
 		expect bool
 	}{
 		{
@@ -31,20 +31,20 @@ func TestBCT(t *testing.T) {
 	}
 }
 
-func newValidCompleteTree() *Node {
-	root := &Node{Val: 1}
-	root.Left = &Node{Val: 2}
-	root.Right = &Node{Val: 3}
-	root.Left.Left = &Node{Val: 4}
+func newValidCompleteTree() *TreeNode {
+	root := &TreeNode{Val: 1}
+	root.Left = &TreeNode{Val: 2}
+	root.Right = &TreeNode{Val: 3}
+	root.Left.Left = &TreeNode{Val: 4}
 	return root
 }
 
-func newInvalidCompleteTree() *Node {
-	root := &Node{Val: 1}
-	root.Left = &Node{Val: 2}
-	root.Right = &Node{Val: 3}
-	root.Right.Left = &Node{Val: 7}
-	root.Right.Right = &Node{Val: 8}
+func newInvalidCompleteTree() *TreeNode {
+	root := &TreeNode{Val: 1}
+	root.Left = &TreeNode{Val: 2}
+	root.Right = &TreeNode{Val: 3}
+	root.Right.Left = &TreeNode{Val: 7}
+	root.Right.Right = &TreeNode{Val: 8}
 
 	return root
 }

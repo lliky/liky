@@ -1,9 +1,9 @@
 package binary_tree
 
-type Node struct {
+type TreeNode struct {
 	Val   int
-	Left  *Node
-	Right *Node
+	Left  *TreeNode
+	Right *TreeNode
 }
 
 func max(a, b int) int {

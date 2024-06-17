@@ -5,13 +5,13 @@ import (
 	"testing"
 )
 
-func NewBinaryTree() *Node {
-	head := &Node{Val: 1}
-	head.Left = &Node{Val: 2}
-	head.Right = &Node{Val: 3}
-	head.Left.Left = &Node{Val: 4}
-	head.Left.Right = &Node{Val: 5}
-	head.Right.Left = &Node{Val: 6}
+func NewBinaryTree() *TreeNode {
+	head := &TreeNode{Val: 1}
+	head.Left = &TreeNode{Val: 2}
+	head.Right = &TreeNode{Val: 3}
+	head.Left.Left = &TreeNode{Val: 4}
+	head.Left.Right = &TreeNode{Val: 5}
+	head.Right.Left = &TreeNode{Val: 6}
 	return head
 }
 

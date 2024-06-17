@@ -3,14 +3,14 @@ package binary_tree
 // 最近公共祖先
 // leetcode 236
 
-func LowestCommonAncestor(root, p, q *Node) *Node {
+func LowestCommonAncestor(root, p, q *TreeNode) *TreeNode {
 	// 每个节点记录父节点
-	parentMap := make(map[*Node]*Node)
+	parentMap := make(map[*TreeNode]*TreeNode)
 	parentMap[root] = nil
 	processLCA(root, parentMap)
 
 	cur := p
-	pMap := make(map[*Node]struct{})
+	pMap := make(map[*TreeNode]struct{})
 	pMap[p] = struct{}{}
 	for cur != nil {
 		cur = parentMap[cur]
@@ -26,7 +26,7 @@ func LowestCommonAncestor(root, p, q *Node) *Node {
 	return nil
 }
 
-func processLCA(root *Node, parentMap map[*Node]*Node) {
+func processLCA(root *TreeNode, parentMap map[*TreeNode]*TreeNode) {
 	if root == nil {
 		return
 	}
@@ -40,7 +40,7 @@ func processLCA(root *Node, parentMap map[*Node]*Node) {
 	}
 }
 
-func LCA1(root, p, q *Node) *Node {
+func LCA1(root, p, q *TreeNode) *TreeNode {
 	if p == root || q == root || root == nil {
 		return root
 	}

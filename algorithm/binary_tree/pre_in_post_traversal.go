@@ -7,7 +7,7 @@ import (
 // 前序遍历
 
 // PreOrderRecur 前序递归遍历
-func PreOrderRecur(head *Node) {
+func PreOrderRecur(head *TreeNode) {
 	if head == nil {
 		return
 	}
@@ -17,11 +17,11 @@ func PreOrderRecur(head *Node) {
 }
 
 // PreOrderUnRecur 前序非递归遍历
-func PreOrderUnRecur(head *Node) {
+func PreOrderUnRecur(head *TreeNode) {
 	if head == nil {
 		return
 	}
-	s := make([]*Node, 0)
+	s := make([]*TreeNode, 0)
 	s = append(s, head)
 	for len(s) > 0 {
 		cur := s[len(s)-1]
@@ -36,7 +36,7 @@ func PreOrderUnRecur(head *Node) {
 	}
 	fmt.Println()
 }
-func InOrderRecur(head *Node) {
+func InOrderRecur(head *TreeNode) {
 	if head == nil {
 		return
 	}
@@ -45,11 +45,11 @@ func InOrderRecur(head *Node) {
 	InOrderRecur(head.Right)
 }
 
-func InOrderUnRecur(head *Node) {
+func InOrderUnRecur(head *TreeNode) {
 	if head == nil {
 		return
 	}
-	s := make([]*Node, 0)
+	s := make([]*TreeNode, 0)
 	for len(s) > 0 || head != nil {
 		if head != nil {
 			s = append(s, head)
@@ -64,7 +64,7 @@ func InOrderUnRecur(head *Node) {
 	fmt.Println()
 }
 
-func PostOrderRecur(head *Node) {
+func PostOrderRecur(head *TreeNode) {
 	if head == nil {
 		return
 	}
@@ -73,11 +73,11 @@ func PostOrderRecur(head *Node) {
 	fmt.Printf("%v ", head.Val)
 }
 
-func PostOrderUnRecur(head *Node) {
+func PostOrderUnRecur(head *TreeNode) {
 	if head == nil {
 		return
 	}
-	s, res := make([]*Node, 0), make([]*Node, 0)
+	s, res := make([]*TreeNode, 0), make([]*TreeNode, 0)
 	s = append(s, head)
 	for len(s) > 0 {
 		cur := s[len(s)-1]

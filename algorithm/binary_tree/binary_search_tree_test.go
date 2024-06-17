@@ -10,10 +10,10 @@ func TestBST(t *testing.T) {
 }
 
 func TestBST2(t *testing.T) {
-	root := &Node{Val: 5}
-	root.Left = &Node{Val: 4}
-	root.Right = &Node{Val: 6}
-	root.Right.Left = &Node{Val: 3}
-	root.Right.Right = &Node{Val: 7}
+	root := &TreeNode{Val: 5}
+	root.Left = &TreeNode{Val: 4}
+	root.Right = &TreeNode{Val: 6}
+	root.Right.Left = &TreeNode{Val: 3}
+	root.Right.Right = &TreeNode{Val: 7}
 	fmt.Println(BST2(root))
 }

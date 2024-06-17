@@ -2,11 +2,11 @@ package binary_tree
 
 import "fmt"
 
-func WidthTraversal(head *Node) {
+func WidthTraversal(head *TreeNode) {
 	if head == nil {
 		return
 	}
-	q := make([]*Node, 0)
+	q := make([]*TreeNode, 0)
 	q = append(q, head)
 	for len(q) > 0 {
 		cur := q[0]

@@ -17,17 +17,17 @@ func TestInorderSuccessor3(t *testing.T) {
 	t.Logf("%v", a)
 }
 
-func NewBST() *Node {
-	root := &Node{Val: 10}
-	root.Left = &Node{Val: 5}
-	root.Right = &Node{Val: 17}
-	root.Left.Left = &Node{Val: 2}
-	root.Left.Right = &Node{Val: 7}
-	root.Right.Left = &Node{Val: 14}
-	root.Right.Right = &Node{Val: 25}
-	root.Left.Left.Left = &Node{Val: 1}
-	root.Left.Left.Right = &Node{Val: 3}
-	root.Left.Right.Left = &Node{Val: 6}
-	root.Left.Right.Right = &Node{Val: 9}
+func NewBST() *TreeNode {
+	root := &TreeNode{Val: 10}
+	root.Left = &TreeNode{Val: 5}
+	root.Right = &TreeNode{Val: 17}
+	root.Left.Left = &TreeNode{Val: 2}
+	root.Left.Right = &TreeNode{Val: 7}
+	root.Right.Left = &TreeNode{Val: 14}
+	root.Right.Right = &TreeNode{Val: 25}
+	root.Left.Left.Left = &TreeNode{Val: 1}
+	root.Left.Left.Right = &TreeNode{Val: 3}
+	root.Left.Right.Left = &TreeNode{Val: 6}
+	root.Left.Right.Right = &TreeNode{Val: 9}
 	return root
 }

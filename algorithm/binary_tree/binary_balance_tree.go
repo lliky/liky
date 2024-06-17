@@ -5,7 +5,7 @@ import "math"
 // 平衡二叉树
 //	性质：该树所有节点的左右子树高度差不超过 1
 
-func BBT(root *Node) bool {
+func BBT(root *TreeNode) bool {
 	return processBBT(root).isBBT
 }
 
@@ -14,7 +14,7 @@ type BBTData struct {
 	height int
 }
 
-func processBBT(root *Node) BBTData {
+func processBBT(root *TreeNode) BBTData {
 	if root == nil {
 		return BBTData{isBBT: true, height: 0}
 	}

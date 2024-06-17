@@ -7,6 +7,6 @@ import (
 
 func TestBFT(t *testing.T) {
 	head := NewBinaryTree()
-	head.Right.Right = &Node{Val: 7}
+	head.Right.Right = &TreeNode{Val: 7}
 	fmt.Println(BFT(head))
 }

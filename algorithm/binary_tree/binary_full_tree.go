@@ -2,7 +2,7 @@ package binary_tree
 
 // 满二叉树，每层节点都是满的
 
-func BFT(root *Node) bool {
+func BFT(root *TreeNode) bool {
 	data := processBFT(root)
 	return data.n == 1<<data.level-1
 }
@@ -12,7 +12,7 @@ type BFTData struct {
 	n     int
 }
 
-func processBFT(root *Node) BFTData {
+func processBFT(root *TreeNode) BFTData {
 	if root == nil {
 		return BFTData{level: 0, n: 0}
 	}

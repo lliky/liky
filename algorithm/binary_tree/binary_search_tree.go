@@ -9,12 +9,12 @@ import "math"
 // 3. 所有左子树和右子树自身必须也是二叉搜索树
 // 中序遍历，就是递增的
 
-func BST1(root *Node) bool {
+func BST1(root *TreeNode) bool {
 	var preVal = math.MinInt
 	return processBST1(root, &preVal)
 }
 
-func processBST1(root *Node, preVal *int) bool {
+func processBST1(root *TreeNode, preVal *int) bool {
 	if root == nil {
 		return true
 	}
@@ -36,11 +36,11 @@ type BSTData struct {
 	min   int
 }
 
-func BST2(root *Node) bool {
+func BST2(root *TreeNode) bool {
 	return processBST2(root).isBST
 }
 
-func processBST2(root *Node) *BSTData {
+func processBST2(root *TreeNode) *BSTData {
 	if root == nil {
 		return nil
 	}
@@ -72,8 +72,8 @@ func processBST2(root *Node) *BSTData {
 	}
 }
 
-func BST3(root *Node) bool {
-	s := make([]*Node, 0)
+func BST3(root *TreeNode) bool {
+	s := make([]*TreeNode, 0)
 	var preVal = -1 << 63
 	for len(s) > 0 || root != nil {
 		if root != nil {

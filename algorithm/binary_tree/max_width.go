@@ -1,11 +1,11 @@
 package binary_tree
 
-func MaxWidth(head *Node) int {
+func MaxWidth(head *TreeNode) int {
 	if head == nil {
 		return 0
 	}
 	res := -1
-	q := make([]*Node, 0)
+	q := make([]*TreeNode, 0)
 	q = append(q, head)
 	for len(q) > 0 {
 		index := len(q)

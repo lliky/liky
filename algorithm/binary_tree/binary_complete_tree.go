@@ -7,11 +7,11 @@ package binary_tree
 // 1. 对于任意节点，有右孩子无左孩子，直接 false
 // 2. 在 1 不违规的情况下，遇到孩子不双全后，后续所有节点都是叶子节点
 
-func BCT(root *Node) bool {
+func BCT(root *TreeNode) bool {
 	if root == nil {
 		return true
 	}
-	queue := make([]*Node, 0)
+	queue := make([]*TreeNode, 0)
 	queue = append(queue, root)
 	flag := false
 	for len(queue) > 0 {
