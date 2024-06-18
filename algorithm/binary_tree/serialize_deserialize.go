@@ -106,17 +106,12 @@ func WidthSerialize(root *TreeNode) string {
 	queue := make([]*TreeNode, 0)
 	queue = append(queue, root)
 	for len(queue) > 0 {
-		index := len(queue)
-		for index > 0 {
-			index--
-			root = queue[0]
-			queue = queue[1:]
-			if root != nil {
-				sb.WriteString(strconv.Itoa(root.Val) + split)
-			} else {
-				sb.WriteString(flag + split)
-				continue
-			}
+		root = queue[0]
+		queue = queue[1:]
+		if root == nil {
+			sb.WriteString(flag + split)
+		} else {
+			sb.WriteString(strconv.Itoa(root.Val) + split)
 			queue = append(queue, root.Left)
 			queue = append(queue, root.Right)
 		}
@@ -125,19 +120,40 @@ func WidthSerialize(root *TreeNode) string {
 }
 
 func WidthDeserialize(str string) *TreeNode {
-	//datas := strings.Split(str, split)
-	//datas = datas[:len(datas)-1]
-	//if len(datas) == 0 {
-	//	return nil
-	//}
-	//x := datas[0]
-	//datas = datas[1:]
-	//val, _ := strconv.Atoi(x)
-	//root := &TreeNode{Val: val}
-	//for len(datas) > 0 {
-	//	if datas[0] == flag {
-	//
-	//	}
-	//}
-	return nil
+	datas := strings.Split(str, split)
+	datas = datas[:len(datas)-1] // 去掉末尾的空字符
+
+	rootVal := datas[0]
+	datas = datas[1:]
+	if rootVal == flag { // 空树
+		return nil
+	}
+	val, _ := strconv.Atoi(rootVal)
+	root := &TreeNode{Val: val}
+	queue := make([]*TreeNode, 0)
+	queue = append(queue, root)
+	for len(queue) > 0 {
+		node := queue[0]
+		queue = queue[1:]
+
+		// left
+		leftVal := datas[0]
+		datas = datas[1:]
+		if leftVal != flag {
+			val, _ = strconv.Atoi(leftVal)
+			left := &TreeNode{Val: val}
+			node.Left = left
+			queue = append(queue, left)
+		}
+		// right
+		rightVal := datas[0]
+		datas = datas[1:]
+		if rightVal != flag {
+			val, _ = strconv.Atoi(rightVal)
+			right := &TreeNode{Val: val}
+			node.Right = right
+			queue = append(queue, right)
+		}
+	}
+	return root
 }
