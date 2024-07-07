@@ -98,3 +98,6 @@ func countDown(i int) {
 
 
 
+## 并查集
+
+岛问题  leetcode 200
