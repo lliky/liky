@@ -98,3 +98,9 @@ func countDown(i int) {
 
 
 
+## 并查集
+
+岛问题  leetcode 200
+
+进阶：如何设计一个并行算法解决这个问题
+

@@ -24,4 +24,25 @@
 
 leetcode 380
 
-设计 RandomPool 
+设计 RandomPool 结构，有如下三个功能：
+
+* insert(key)：将某个 key 加入到该结构，做到不重复加入
+* delete(key)：将原本在结构中的某个 key 移除
+* getRadom()：等概率随机返回结构中的任何一个 key
+
+要求：insert、delete、getRadom 时间复杂度都是 O(1)
+
+
+
+##  题目3
+
+布隆过滤器
+
+
+
+## 题目4
+
+一致性 哈希原理
+
+
+
