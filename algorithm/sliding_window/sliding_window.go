@@ -13,7 +13,7 @@ func SlidingWindow(nums []int, k int) []int {
 			qMax = qMax[:len(qMax)-1]
 		}
 		qMax = append(qMax, i)
-		//if len(qMax) == k+1 { 这里不能以 队列的长度来判断，可参考iTestB
+		//if len(qMax) == k+1 { 这里不能以 队列的长度来判断，可参考 TestB
 		if qMax[0] == i-k { // 说明第一个最大数超出滑动窗口的范围
 			qMax = qMax[1:]
 		}
