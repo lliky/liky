@@ -146,3 +146,27 @@ leetcode 28
    3. i' 区域刚好和 L 压线，暴力扩
 
       abcdcbakskabcdcba?
+
+
+
+
+
+## 滑动窗口
+
+双端队列
+
+leetcode 239
+
+
+
+## 单调栈
+
+leetcode 739
+
+leetcode 42
+
+定义：数组中累积和与最小值的乘积，假设叫指标 A。
+
+给定一个正数数组，请返回子数组中，指标 A 最大的值。
+
+leetcode 1856
