@@ -1,5 +1,9 @@
 package manacher
 
+import (
+	"fmt"
+)
+
 func MaxLcpsLength(s string) int {
 	if len(s) == 0 {
 		return 0
@@ -54,8 +58,90 @@ func manacher1(s string) (r, index int) {
 			C = i
 			R = C + d[i] - 1
 		}
+		fmt.Printf("R = %d, C = %d\n", R, C)
 	}
+	fmt.Println(d)
 	return
+}
+
+// 返回最长回文长度
+func manacher(s string) int {
+	str := manacherString(s)
+	d := make([]int, len(str))      // 回文半径数组
+	var res = -1                    // 保存最大值
+	R, C := -1, 0                   // R 回文边界, C 中心位置
+	for i := 0; i < len(str); i++ { // 每一个位置都求回文半径
+		// [i] 至少回文半径区域，先赋值给 d[i]
+		if R <= i {
+			d[i] = 1
+		} else {
+			// i'位置 C - (i -C) = 2 * C -i
+			d[i] = min(d[2*C-i], R-i)
+		}
+
+		for i-d[i] >= 0 && i+d[i] < len(str) && str[i-d[i]] == str[i+d[i]] {
+			d[i]++
+		}
+		if i+d[i]-1 > R {
+			C = i
+			R = i + d[i] - 1
+		}
+		fmt.Printf("R = %d, C = %d\n", R, C)
+		res = max(res, d[i])
+	}
+	fmt.Println(d)
+	return res - 1
+}
+
+func max(a, b int) int {
+	if a < b {
+		return b
+	}
+	return a
+}
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func manacher2(s string) int {
+	str := manacherString(s)
+	d := make([]int, len(str))
+	R, C := -1, -1 // R 最左边边界, C 中心点
+	res := -1
+	for i := 0; i < len(str); i++ {
+		// 说明 i == R 的情况，两者都可以
+		if R <= i { // i 在 R 外面
+			d[i] = 1 // 可写可不写，不写就要和自己比一次
+			for i-d[i] >= 0 && i+d[i] < len(str) && str[i-d[i]] == str[i+d[i]] {
+				d[i]++
+			}
+		} else { // i  属于 [L...R] 区间
+			// i' (2*C - i) 左右边界 [2*C - i - d[2 *C -i] + 1, 2 *C - i + d[2*C - i] -1 ]
+			// C 左右边界[2*C - R, R]
+			if 2*C-i-d[2*C-i]+1 > 2*C-R { // i' 属于 C 里面
+				d[i] = d[2*C-i]
+			} else if 2*C-i-d[2*C-i]+1 < 2*C-R { // i' 左边界不属于 C
+				d[i] = R - i + 1
+			} else {
+				// i' 恰好和 L 重合
+				d[i] = R - i + 1
+				for i-d[i] >= 0 && i+d[i] < len(str) && str[i-d[i]] == str[i+d[i]] {
+					d[i]++
+				}
+			}
+		}
+		if i+d[i]-1 > R {
+			R = i + d[i] - 1
+			C = i
+		}
+		fmt.Printf("R = %d, C = %d\n", R, C)
+		res = max(res, d[i])
+	}
+	fmt.Println(d)
+	return res - 1
 }
 
 //func manacher(s string)  {

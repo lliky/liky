@@ -14,7 +14,7 @@ func TestManacher(t *testing.T) {
 }
 
 func TestManacher1(t *testing.T) {
-	s := "abcb"
+	s := "aba"
 	fmt.Println(manacher1(s))
 }
 
@@ -44,4 +44,16 @@ func TestMaxLcpsLength(t *testing.T) {
 		actual := MaxLcpsLength(testCase.s)
 		require.Equal(t, testCase.expected, actual)
 	}
+}
+
+func TestMaxLcpsLength2(t *testing.T) {
+	s := "aba"
+	//1 2 1 4 1 2 1
+	fmt.Println(manacher(s))
+}
+
+func TestMaxLcpsLength3(t *testing.T) {
+	s := "aba"
+	//1 2 1 4 1 2 1
+	fmt.Println(manacher2(s))
 }
