@@ -12,6 +12,7 @@ func NewBinaryTree() *TreeNode {
 	head.Left.Left = &TreeNode{Val: 4}
 	head.Left.Right = &TreeNode{Val: 5}
 	head.Right.Left = &TreeNode{Val: 6}
+	head.Right.Right = &TreeNode{Val: 7}
 	return head
 }
 
