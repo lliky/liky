@@ -1,0 +1,47 @@
+apiVersion: v1 # api 文档版本
+kind: Pod
+metadata:
+  name: nginx-prestop
+  labels:
+    tpye: app
+    test: 1.0.0
+  namespace: 'default'
+spec:
+  terminationGracePeriodSeconds: 20
+  containers:
+  - name: nginx
+    image: nginx
+    imagePullPolicy: IfNotPresent
+    lifecycle:
+      postStart:
+        exec:
+          command:
+          - sh 
+          - -c
+          - "echo '<h1> pre stop</h1>' > /usr/share/nginx/html/prestop.html"
+      preStop:
+        exec:
+          command:
+          - sh
+          - -c
+          - "sleep 50; echo 'sleep finished...' >> /usr/share/nginx/html/prestop.html "
+    command:
+    - nginx
+    - -g
+    - 'daemon off;'
+    workingDir: /usr/share/nginx/html
+    ports:
+    - name: http
+      containerPort: 80
+      protocol: TCP
+    env:
+    - name: JVM_OPTS
+      value: '-Xms128m -Xmx128m'
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+  restartPolicy: OnFailure
