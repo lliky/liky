@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: nginx-deploy
+  name: nginx-deploy
+  namespace: default
+spec:
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: nginx-deploy
+  strategy: # 更新策略
+    rollingUpdate:  # 滚动更新配置
+      maxSurge: 25% # 滚动更新时，更新个数最多可以超过期望副本数的个数/比例
+      maxUnavailable: 25% # 滚动更新，最大可不用比例
+    type: RollingUpdate # 更新类型
+  template:
+    metadata:
+      labels:
+        app: nginx-deploy
+    spec:
+      containers:
+      - image: nginx
+        imagePullPolicy: Always
+        name: nginx
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
