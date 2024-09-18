@@ -525,8 +525,189 @@ kubectl scale --help  #命令查看
 
 #### 6.2.1配置文件
 
+[deploy.yaml](./deployment/nginx-deploy.yaml)
+
 ### 6.3 StatefulSet
+
+#### 6.3.1 功能
+
+##### 6.3.1.1 创建
+
+[statefulSet](./statefulSet/web.yaml)
+
+##### 6.3.1.2 扩容缩容
+
+```shell
+kubectl scale statefulset web --replicas=5
+kubectl pathc statefulset web -p '{"spec":{"replicas": 3}}' 
+# 删除有顺序性
+
+```
+
+##### 6.3.1.3 镜像更新
+
+暂时不支持直接更新 image，需要 patch 来间接实现
+
+```
+kubectl patch statefulset web --type='json'='["op": "replace", "path": "/spec/tempalte/spec/containers/0/image", "value":"nginx:1.9.1"]'	
+```
+
+* RollingUpdate
+
+  滚动更新策略，同样是修改 pod template 属性后会触发更新，但是由于 pod 是有序的，在 statefulset 中更新时是基于 pod 的顺序**倒序更新**的
+
+  **灰度发布**(金丝雀发布)
+
+  利用滚动更新中的 partition 属性，可以实现简易的灰度发布的效果。
+
+  例如：有 5 个 pod ，如果当前 partition 设置为 3 ，那么此时滚动更新时，只会更新那些序号 >=3 的 pod。
+
+  利用该机制，可以可以通过控制 partition 的值，来决定只更新其中一部分 pod ，确认没问题后，在增大更新 pod 的数量，最终实现全部 pod 更新。
+
+* OnDelete
+
+  删除镜像之后才更新
+
+##### 6.3.1.4 删除
+
+* 级联删除：删除 sts 时，会同时删除 pods
+
+* 非级联删除：删除 sts 时不会删除 pods
+
+  ```shell
+  kubectl delete sts web --cascade=false # --cascade=orphan
+  ```
+
+#### 6.3.2 配置文件
 
 ### 6.4 DaemonSet
 
+#### 6.4.1 指定 node 节点
+
+DaemonSet 会忽略 Node 的 unschedulable 状态，有两种方式来指定 Pod 只运行在指定的 Node 节点上
+
+* nodeSelector：只调度到匹配指定 label 的 Node 上
+* nodeAffinity：功能丰富的 Node 选择器，比如支持集合操作
+* podAffinity：调度到满足条件的 Pod 所在的 Node 上
+
+#### 6.4.2 滚动更新
+
+不建议使用 RollingUpdate, 建议使用 OnDelete 模式，这样避免频繁更新 ds
+
 ### 6.5 HPA 自动扩/缩容
+
+通过观察 pod 的 cpu 、内存使用率或自定义 metrics 指标进行自动的扩容或缩容 pod 的数量
+
+通常用于 Deployment ，不适用于无法扩缩容的对象，如 DaemeonSet
+
+控制管理器每隔 30s 查询 metrics 的资源使用情况
+
+#### 6.5.1 cpu、内存指标监控
+
+> 前提：该对象必须配置 resources.request.cpu 或 resources.request.memory 才可以。配置当 cpu/memory 达到上述配置的百分比后进行扩容或缩容
+
+创建一个 HPA:
+
+1. 准备好一个有资源限制的 deployment
+
+2. 执行命令
+
+   ```shell
+   # --cpu-percent cpu 使用率占20 就扩容，最小两个，最大 5 个
+   kubectl autoscale deploy deploy_name --cpu-percent=20 --min=2 --max=5
+   ```
+
+3. 通过 kubectl get hpa 获取 HPA 信息
+
+#### 6.5.2 自定义 metrics
+
+
+
+## 7. 服务发布
+
+### 7.1 服务发现
+
+#### 7.1.1 Service
+
+Pod 不能直接提供给外网访问，而是应该使用 service。Service 就是把 Pod 暴露出来提供服务，Service 才是真正的“服务”。
+
+Service 是一个应用服务的抽象，定义了 Pod 逻辑集合和访问这个 Pod 集合的策略。Service 代理 Pod 集合，对外表现为一个访问入口，访问该入口的请求将经过负载均衡，转发到后端 Pod 中的容器。
+
+##### 7.1.1.1 Service 的定义
+
+* 命令操作
+
+  ```shell
+  # 创建 service
+  kubectl create -f file.yaml
+  
+  # 查看 service 信息，通过 service 的 cluster ip 进行访问
+  kubectl get svc
+  
+  # 查看 pod 信息，通过 pod 的 ip 进行访问
+  kubectl get pod -o wide
+  
+  # 创建其他 pod 通过 service name 进行访问
+  kubectl exec -it busybox -- sh
+  curl http://nginx-svc
+  
+  # 默认在当前 namespace 中访问，如果需要跨 namespace 访问 pod，则在 service name 后面加上 <.namespace> 即可
+  curl http://gninx-svc.default
+  ```
+
+* Endpoint
+
+  ```
+  kubectl get endpoints
+  ```
+
+##### 7.1.1.2 代理 k8s 外部服务
+
+实现方式：
+
+1. 编写 service 配置文件时，不指定 selector 属性
+2. 自己创建 endpoint
+
+需要访问外部服务的情形：
+
+* 各种环境访问名称统一
+* 访问 k8s 集群外的其他服务
+* 项目迁移
+
+##### 7.1.1.3 反向代理外部域名
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+	labels:
+		app: external-domain
+	name: external-domain
+spec:
+	type: ExternalName
+	externalName: www.baidu.com
+```
+
+
+
+##### 7.1.1.4 常用类型
+
+* ClusterIP
+
+  只能在集群内部使用，不配置类型，就默认 ClusterIP
+
+* ExternalName
+
+  返回定的 CNAME 别名，可以配置为域名
+
+* NodePort
+
+  会在所有安装了 kube-proxy 的节点都绑定一个端口，此端口可以代理至对应的 Pod，集群外部可以使用任意节点 ip + NodePort 的端口号访问到集群中对应 Pod 中的服务
+
+  当类型设置为 NodePort 后，可以在 ports 配置中增加 nodePort 配置指定端口，如果不指定会随机指定端口
+
+  端口范围：30000 ～ 32767
+
+* LoadBalancer
+
+  使用云服务商提供的负载均衡服务
