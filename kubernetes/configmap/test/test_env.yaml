@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-env-cm
+spec:
+  containers:
+    - name: env-test
+      image: alpine
+      command: ["/bin/sh", "-c", "env; sleep 3600"]
+      imagePullPolicy: IfNotPresent
+      env:
+      - name: JAVA_VM_OPTS
+        valueFrom:
+          configMapKeyRef:
+            name: env-config-test
+            key: JAVA_OPTS_TEST
+      - name: APP
+        valueFrom:
+          configMapKeyRef:
+            name: env-config-test
+            key: APP_NAME
+      volumeMounts:
+        - name: db-config
+          mountPath: "/usr/local/mysql/conf"
+          readOnly: true
+  volumes: 
+    - name: db-config
+      configMap: 
+        name: test-dir-config
+        items:
+        - key: "db.properties"
+          path: "db.properties"
+  restartPolicy: Never

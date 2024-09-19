@@ -711,3 +711,43 @@ spec:
 * LoadBalancer
 
   使用云服务商提供的负载均衡服务
+
+
+
+### 7.2 ingress
+
+
+
+## 8 配置与存储
+
+### 8.1 配置与管理
+
+#### 8.1.1 ConfigMap
+
+* 创建
+
+  ```shell
+  $ kubectl create configmap -h
+  # 根据文件夹创建，会把文件夹里面的文件都加载到 cm
+  $ kubectl create configmap my-config --from-file=path/to/bar
+  
+  # 指定文件去创建，常用，key 把原文件重命名
+  kubectl create configmap my-config --from-file=key1=/path/to/bar/file1.txt --from-file=key2=/path/to/bar/file2.txt
+  
+  # 自己写 key=value 键值对
+  kubectl create configmap my-config --from-literal=key1=config1 --from-literal=key2=config2
+  ```
+
+  使用 -h 查看示例，构建 ConfigMap 对象
+
+* 使用 ConfigMap
+
+#### 8.1.2 加密数据配置 Secret
+
+#### 8.1.3 SubPath 的使用
+
+#### 8.1.4 配置数据的热更新
+
+#### 8.1.5 不可变的 Secret 和 ConfigMap
+
+### 8.2 持久化存储
