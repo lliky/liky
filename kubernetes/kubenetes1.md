@@ -744,10 +744,63 @@ spec:
 
 #### 8.1.2 加密数据配置 Secret
 
+用于存储配置信息，主要用于存储敏感信息、需要加密的信息，Secret 可以提供数据加密、解密功能。
+
+在创建 Secret 时，需要注意还有特殊字符需要使用转义字符或单引号描述。
+
+```shell
+$ kubectl create secret -h
+$ kubectl create secret generic demo-secret --from-literal=username=admin --from-literal=passwd='123'
+```
+
 #### 8.1.3 SubPath 的使用
+
+在使用 ConfigMap 或 Secret 挂载到目录的时候，会将容器中源目录给覆盖掉，但是我们只想覆盖目录中一个文件，这时就需要使用 SubPath。
+
+配置方式：
+
+1. 定义 volumes 时需要增加 items 属性，配置 key 和 path，且 path 不能以 '/' 开始
+2. 在容器内的 volumeMounts 中增加 subPath 属性，该值与 volumes 中 items.path 的值相同
 
 #### 8.1.4 配置数据的热更新
 
+1. 通过 edit 命令直接修改 configmap
+
+   通常将项目的配置文件作为 configMap，然后挂载到 pod ，那么如果更新 configMap 中的配置，会不会更新到 pod 中呢？
+
+   几种情况：
+
+   * 默认方式：会更新，更新周期是更新时间 + 缓存时间
+   * subPath：不会更新
+   * 变量形式：如果 pod 中的一个变量是从 configMap 或 secret 中得到，不会更新
+
+2. 通过 replace 替换
+
+   ```
+   kubectl create cm --from-file=nginx.conf --dry-run -o yaml | kubectl replace -f-
+   ```
+
+   
+
 #### 8.1.5 不可变的 Secret 和 ConfigMap
 
+在配置 configmap 时可以设置 immutable: true 来禁止修改
+
 ### 8.2 持久化存储
+
+#### 8.2.1 Volumes
+
+##### 8.2.1.1 HostPath
+
+将节点上的文件或目录挂载到 Pod 上，此时该目录会变成持久化存储目录，即使 Pod 被删除后重启，也可以重新加载到该目录，文件不会丢失。
+
+##### 8.2.1.2 EmptyDir
+
+主要用于一个 Pod 中不同的 Container 共享数据使用的，由于只是在 Pod 内部使用，因此与其他 volume 比较大的区别是，当 Pod 如果被删除了，那么 emptyDir 也会被删除。
+
+存储介质可以是任意类型，如 SSD、磁盘或网络存储。
+
+#### 8.2.2 NFS 挂载
+
+#### 8.2.3 PV 与 PVC
+

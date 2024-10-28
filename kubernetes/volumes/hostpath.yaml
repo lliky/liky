@@ -11,10 +11,10 @@ spec:
     - -c
     - sleep 84000
     volumeMounts:
-    - mountPath: /tmp/leitong
-      name: test-volume
+    - mountPath: /tmp/leitong  # 挂在到容器的哪个目录
+      name: test-volume # 挂在到哪个 volume
   volumes: 
   - name: test-volume
-    hostPath:
-      path: /tmp/leitongaaa
-      type: Directory
+    hostPath: # 加载主机目录到容器中
+      path: /tmp/leitongaaa # 节点目录
+      type: Directory # 文件夹类型
