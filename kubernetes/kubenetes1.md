@@ -802,5 +802,82 @@ $ kubectl create secret generic demo-secret --from-literal=username=admin --from
 
 #### 8.2.2 NFS 挂载
 
+NFS 卷能将 NFS(网络文件系统) 挂载到你的 Pod 中。nfs 卷的内容在删除 Pod 时会被保存，卷只是被卸载。意味着 nfs 可以被预先填充数据，并且这些数据可以在 Pod 之间共享。
+
+需要安装 NFS 服务
+
 #### 8.2.3 PV 与 PVC
 
+##### 8.2.3.1 生命周期
+
+##### 8.2.3.2 PV
+
+##### 8.2.3.3 PVC
+
+##### 8.2.3.4 StorageClass
+
+
+
+## 9 高级调度
+
+### 9.1 CronJob 计划任务
+
+在 k8s 中周期性运行计划任务。
+
+#### 9.1.1 表达式
+
+```
+------ 分钟（0 - 59）
+| ------ 小时（0 - 23）
+| | ------ 月的某天（1 - 31）
+| | |	------ 月份（ 1 - 12）
+| | | | ------ 周的某天（0 - 6）
+| | | | |
+| | | | |
+* * * * * 
+```
+
+### 9.2 初始化容器 InitContainer
+
+### 9.3 污点和容忍
+
+#### 9.3.1 污点（taint）
+
+* NoSchedule：如果不能容忍该节点，那么 pod 就无法调度到该节点上
+* NoExecute：不能执行
+  * 如果 Pod 不能忍受污点，Pod 会马上被驱逐
+  * 如果 Pod 能忍受这类污点，但是没有指定 tolerationSeconds ，则 Pod 还会一直在该节点上运行
+  * 如果 Pod 能忍受这类污点，且指定 tolerationSeconds ，则 Pod 还在该节点上运行指定的时间长度
+
+```shell
+# 添加污点
+kubectl taint node node-name key=value:NoSchedule
+# 移除污点
+kubectl taint node node-name key=value:NoSchedule-
+# 查看污点
+kubectl describe node node-name
+```
+
+#### 9.3.2 容忍度（toleration）
+
+标注在 pod 上的，当 pod 被调度时，如果没有配置容忍，则该 pod 不会被调度到有污点的节点上，只有该 pod 上标注了满足某个节点的所有污点，则会被调度到这些节点
+
+```yaml
+# pod 的 spec 下面配置容忍
+toleration:
+- key: "污点的 key "
+	value: "污点的 value "
+	offect: "NoSchedule" # 污点产生的影响
+	operator: "Equal/Exists"
+```
+
+* Equal：意味着必须与污点值做匹配，key/value 都必须相同，才表示能够容忍该污点
+* Exists：容忍与污点的比较只比较 key，不关心 value 的值
+
+### 9.4 亲和力（Affinity）
+
+#### 9.4.1  NodeAffinity
+
+#### 9.4.2 PodAffinity
+
+#### 9.4.3 PodAntiAffinty
