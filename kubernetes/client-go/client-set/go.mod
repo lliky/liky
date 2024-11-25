@@ -1,6 +1,6 @@
-module github.com/liky/client-go/rest-client
+module github.com/liky/client-go/client-set
 
-go 1.21.6
+go 1.22.6
 
 require (
 	k8s.io/apimachinery v0.23.3

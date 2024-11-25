@@ -16,7 +16,6 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-
 	config.GroupVersion = &v1.SchemeGroupVersion
 	config.APIPath = "/api"
 	config.NegotiatedSerializer = scheme.Codecs
@@ -27,7 +26,7 @@ func main() {
 	}
 	// get data
 	pod := v1.Pod{}
-	err = client.Get().Namespace("default").Resource("pods").Name("test").Do(context.TODO()).Into(&pod)
+	err = client.Get().Namespace("kube-system").Resource("pods").Name("kube-controller-manager-master01").Do(context.TODO()).Into(&pod)
 	if err != nil {
 		fmt.Println(err)
 	} else {
