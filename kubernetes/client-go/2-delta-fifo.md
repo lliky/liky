@@ -387,6 +387,7 @@ func (f *DeltaFIFO) Replace(list []interface{}, _ string) error {
 		}
 	}
 
+	// knownObects 不为 nil
 	if f.knownObjects == nil {
 		// Do deletion detection against our own list.
 		queuedDeletions := 0
@@ -447,3 +448,96 @@ func (f *DeltaFIFO) Replace(list []interface{}, _ string) error {
 	return nil
 }
 ```
+
+### 3.6 DeleteFIFO.Pop
+
+1.	加锁；
+2.	循环判断 queue 的长度是否为 0，为 0 则阻塞住，调用 f.cond.Wait()，等到通知；就是 f.cond.Broadcast()，有新的对象加入队列；
+3.	取队首的对象；
+4.	更新 queue，把第一个对象 pop 出去；
+5.	initialPopulationCount 自减，当变为 0时，说明 initialPopulationCount 代表第一次调用 Replace 方法加入 DeltaFIFO 中对象 key 已经被 pop 完成；
+6.	根据对象 key 从 items 中获取 Deltas；
+7.	把 Deltas 从 items 中删除；
+8.	调用 PopProcessFunc 处理获取到的 Deltas；
+9.	解锁。
+
+```go
+// client-go/tools/cache/delta_fifo.go
+func (f *DeltaFIFO) Pop(process PopProcessFunc) (interface{}, error) {
+	f.lock.Lock()
+	defer f.lock.Unlock()
+	for {
+		for len(f.queue) == 0 {
+			// When the queue is empty, invocation of Pop() is blocked until new item is enqueued.
+			// When Close() is called, the f.closed is set and the condition is broadcasted.
+			// Which causes this loop to continue and return from the Pop().
+			if f.closed {
+				return nil, ErrFIFOClosed
+			}
+
+			f.cond.Wait()
+		}
+		id := f.queue[0]
+		f.queue = f.queue[1:]
+		depth := len(f.queue)
+		if f.initialPopulationCount > 0 {
+			f.initialPopulationCount--
+		}
+		item, ok := f.items[id]
+		if !ok {
+			// This should never happen
+			klog.Errorf("Inconceivable! %q was in f.queue but not f.items; ignoring.", id)
+			continue
+		}
+		delete(f.items, id)
+		// Only log traces if the queue depth is greater than 10 and it takes more than
+		// 100 milliseconds to process one item from the queue.
+		// Queue depth never goes high because processing an item is locking the queue,
+		// and new items can't be added until processing finish.
+		// https://github.com/kubernetes/kubernetes/issues/103789
+		if depth > 10 {
+			trace := utiltrace.New("DeltaFIFO Pop Process",
+				utiltrace.Field{Key: "ID", Value: id},
+				utiltrace.Field{Key: "Depth", Value: depth},
+				utiltrace.Field{Key: "Reason", Value: "slow event handlers blocking the queue"})
+			defer trace.LogIfLong(100 * time.Millisecond)
+		}
+		err := process(item)
+		if e, ok := err.(ErrRequeue); ok {
+			f.addIfNotPresent(id, item)
+			err = e.Err
+		}
+		// Don't need to copyDeltas here, because we're transferring
+		// ownership to the caller.
+		return item, err
+	}
+}
+```
+
+### 5.7 DeltaFIFO.HasSynced
+
+代表第一次从 API Server 中获取到的全量的对象是否全部从 DeltaFIFO 中 pop 完成，若全部完成，说明 list 回来的对象全部同步到 indexer 缓存中。
+
+该方法返回结果由两个变量决定：populated 和 initialPopulationCount
+
+*	populated 是第一调用 Replace 方法就已经设置为 true；
+*	initialPopulationCount 在第一次调用 Replace 时，值是 items 的数量，然后 pop 一次自减一次，当 pop 完成，变为 0；
+
+```go
+// client-go/tools/cache/delta_fifo.go
+func (f *DeltaFIFO) HasSynced() bool {
+	f.lock.Lock()
+	defer f.lock.Unlock()
+	return f.populated && f.initialPopulationCount == 0
+}
+```
+
+## 总结
+Reflector 调用的 r.store.Add、r.store.Update、r.store.Delete、r.store.Replace 方法其实就是 DeltaFIFO 的 Add、Update、Delete、Replace 方法。
+
+1.	DeltaFIFO.Add：构建 Added 类型的 Delta 加入 DeltaFIFO 中；
+2.	DeltaFIFO.Update：构建 Updated 类型的 Delta 加入 DeltaFIFO 中；
+3.	DeltaFIFO.Delete：构建 Deleted 类型的 Delta 加入 DeltaFIFO 中；
+4.	DeltaFIFO.Replace：构造 Sync 类型的 Delta 加入 DeltaFIFO 中，此外还会对比 DeltaFIFO 中的 items 与 Replace 方法的 list，如果 DeltaFIFO 中的 items 有，但传进来 Replace 方法的 list 中没有某个key，则构造 Deleted 类型的 Delta 加入DeltaFIFO中；
+5.	DeltaFIFO.Pop：从 DeltaFIFO 的 queue 中 pop 出队头 key，从 map 中取出 key 对应的 Deltas 返回，并把该 key:Deltas 从  map 中移除；
+DeltaFIFO.HasSynced：返回 true 代表同步完成，是否同步完成指第一次从 kube-apiserver 中获取到的全量的对象是否全部从 DeltaFIFO 中 pop 完成，全部 pop 完成，说明 list 回来的对象已经全部同步到了 Indexer 缓存中去了；
