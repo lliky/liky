@@ -419,3 +419,285 @@ func (c *threadSafeMap) Index(indexName string, obj interface{}) ([]interface{},
 	return list, nil
 }
 ```
+
+#### 3.4.2 IndexKeys(indexName, indexedValue string) ([]string, error)
+
+返回的是资源对象键
+给定索引分类中，索引键的列表
+
+**示例**：
+```go
+items, err := indexer.IndexKeys("namespace", "default")
+for _, key:= range items {
+    fmt.Println(key)
+}
+```
+```sh
+default/pod-1
+default/pod-2
+```
+
+```go
+// client-go/tools/cache/store.go
+func (c *cache) IndexKeys(indexName, indexKey string) ([]string, error) {
+	return c.cacheStorage.IndexKeys(indexName, indexKey)
+}
+```
+```go
+// client-go/tools/cache/thread_safe_store.go
+func (c *threadSafeMap) IndexKeys(indexName, indexedValue string) ([]string, error) {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+	// indexName = namesapce
+	// indexedValue = default
+	indexFunc := c.indexers[indexName]
+	if indexFunc == nil {
+		return nil, fmt.Errorf("Index with name %s does not exist", indexName)
+	}
+
+	index := c.indices[indexName]
+	/*
+     index := {
+        "default": ["default/pod-1", "default/pod-2"]
+        "kube-system": ["kube-system/pod-3"]
+    }
+    */
+
+	// set = ["default/pod-1", "default/pod-2"]
+	set := index[indexedValue]
+	return set.List(), nil
+}
+```
+
+#### 3.4.3 ListIndexFuncValues(indexName string) []string
+
+返回索引键  
+该索引分类下的所有索引键
+
+**示例**：
+```go
+items, err := indexer.IndexKeysListIndexFuncValues("namespace")
+for _, key:= range items {
+    fmt.Println(key)
+}
+```
+```sh
+default
+kube-system
+```
+```go
+// client-go/tools/cache/store.go
+func (c *cache) ListIndexFuncValues(indexName string) []string {
+	return c.cacheStorage.ListIndexFuncValues(indexName)
+}
+```
+```go
+// client-go/tools/cache/thread_safe_store.go
+func (c *threadSafeMap) ListIndexFuncValues(indexName string) []string {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+
+	index := c.indices[indexName]
+	names := make([]string, 0, len(index))
+	for key := range index {
+		names = append(names, key)
+	}
+	return names
+}
+```
+
+#### 3.4.4 	ByIndex(indexName, indexedValue string) ([]interface{}, error)
+
+和 IndexKeys 类似  
+ByIndex 返回的是资源对象  
+IndexKeys 返回的是资源对象键  
+这里不赘述了。
+
+
+## 4. Indexer 本地缓存
+
+informer 的本地缓存就是 Indexer 中的 ThreadSafeMap，具体的就是 threadSafeMap 中的 items 属性。
+
+### 4.1 threadSafeMap struct
+
+items 保存的是资源对象，就是 informer 的本地缓存
+```go
+// client-go/tools/cache/thread_safe_store.go
+type threadSafeMap struct {
+	lock  sync.RWMutex
+	items map[string]interface{}
+
+	// indexers maps a name to an IndexFunc
+	indexers Indexers
+	// indices maps a name to an Index
+	indices Indices
+}
+```
+
+threadSafeMap 核心几个方法，都是去操作 items 属性的；
+在之前 controller 提到的 s.indexer.Add、s.indexer.Update、s.indexer.Delete、s.indexer.Get 等方法其实最终就是调用的threadSafeMap.Add、threadSafeMap.Update、threadSafeMap.Delete、threadSafeMap.Get 等；
+
+```go
+// client-go/tools/cache/shared_informer.go
+func (s *sharedIndexInformer) HandleDeltas(obj interface{}) error {
+	s.blockDeltas.Lock()
+	defer s.blockDeltas.Unlock()
+
+	// from oldest to newest
+	for _, d := range obj.(Deltas) {
+		switch d.Type {
+		case Sync, Replaced, Added, Updated:
+			s.cacheMutationDetector.AddObject(d.Object)
+			if old, exists, err := s.indexer.Get(d.Object); err == nil && exists {
+				if err := s.indexer.Update(d.Object); err != nil {
+					return err
+				}
+
+				isSync := false
+				switch {
+				case d.Type == Sync:
+					// Sync events are only propagated to listeners that requested resync
+					isSync = true
+				case d.Type == Replaced:
+					if accessor, err := meta.Accessor(d.Object); err == nil {
+						if oldAccessor, err := meta.Accessor(old); err == nil {
+							// Replaced events that didn't change resourceVersion are treated as resync events
+							// and only propagated to listeners that requested resync
+							isSync = accessor.GetResourceVersion() == oldAccessor.GetResourceVersion()
+						}
+					}
+				}
+				s.processor.distribute(updateNotification{oldObj: old, newObj: d.Object}, isSync)
+			} else {
+				if err := s.indexer.Add(d.Object); err != nil {
+					return err
+				}
+				s.processor.distribute(addNotification{newObj: d.Object}, false)
+			}
+		case Deleted:
+			if err := s.indexer.Delete(d.Object); err != nil {
+				return err
+			}
+			s.processor.distribute(deleteNotification{oldObj: d.Object}, false)
+		}
+	}
+	return nil
+}
+
+```
+
+### 4.2 threadSafeMap.Add
+调用链：s.indexer.Add --> cache.Add --> threadSafeMap.Add
+
+threadSafeMap.Add 方法将 key：object 存入 items 中，并调用 updateIndices 方法更新索引。
+
+```go
+// client-go/tools/cache/thread_safe_store.go
+func (c *threadSafeMap) Add(key string, obj interface{}) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	oldObject := c.items[key]
+	c.items[key] = obj
+	c.updateIndices(oldObject, obj, key)
+}
+```
+
+### 4.3 threadSafeMap.updateIndices
+
+更新索引的，在 Add、Update、Delete、Replace 中都有调用去更新索引
+
+```go
+func (c *threadSafeMap) updateIndices(oldObj interface{}, newObj interface{}, key string) {
+	var oldIndexValues, indexValues []string
+	var err error
+	for name, indexFunc := range c.indexers {
+		if oldObj != nil {
+			oldIndexValues, err = indexFunc(oldObj)
+		} else {
+			oldIndexValues = oldIndexValues[:0]
+		}
+		if err != nil {
+			panic(fmt.Errorf("unable to calculate an index entry for key %q on index %q: %v", key, name, err))
+		}
+
+		if newObj != nil {
+			indexValues, err = indexFunc(newObj)
+		} else {
+			indexValues = indexValues[:0]
+		}
+		if err != nil {
+			panic(fmt.Errorf("unable to calculate an index entry for key %q on index %q: %v", key, name, err))
+		}
+
+		index := c.indices[name]
+		if index == nil {
+			index = Index{}
+			c.indices[name] = index
+		}
+
+		for _, value := range oldIndexValues {
+			// We optimize for the most common case where index returns a single value.
+			if len(indexValues) == 1 && value == indexValues[0] {
+				continue
+			}
+			c.deleteKeyFromIndex(key, value, index)
+		}
+		for _, value := range indexValues {
+			// We optimize for the most common case where index returns a single value.
+			if len(oldIndexValues) == 1 && value == oldIndexValues[0] {
+				continue
+			}
+			c.addKeyToIndex(key, value, index)
+		}
+	}
+}
+```
+
+### 4.4 threadSafeMap.Update
+调用链：s.indexer.Update --> cache.Update --> threadSafeMap.Update
+
+threadSafeMap.Update方法逻辑与threadSafeMap.Add方法相同；
+
+```go
+// client-go/tools/cache/thread_safe_store.go
+func (c *threadSafeMap) Update(key string, obj interface{}) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	oldObject := c.items[key]
+	c.items[key] = obj
+	c.updateIndices(oldObject, obj, key)
+}
+```
+
+### 4.5 threadSafeMap.Delete
+调用链：s.indexer.Delete --> cache.Delete --> threadSafeMap.Delete
+
+先判断本地缓存 items 中是否存在该 key，存在则调用 updateIndices 更新相关索引，然后删除items中的key及其对应object
+```go
+// client-go/tools/cache/thread_safe_store.go
+func (c *threadSafeMap) Delete(key string) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if obj, exists := c.items[key]; exists {
+		c.updateIndices(obj, nil, key)
+		delete(c.items, key)
+	}
+}
+```
+
+### 4.6 threadSafeMap.Get
+调用链：s.indexer.Get --> cache.Get --> threadSafeMap.Get
+
+```go
+// client-go/tools/cache/thread_safe_store.go
+func (c *threadSafeMap) Get(key string) (item interface{}, exists bool) {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+	item, exists = c.items[key]
+	return item, exists
+}
+```
+
+### 5 总结
+
+Indexer 中有 informer 维护的指定资源对象的相对于 etcd 数据的一份本地内存缓存，可通过该缓存获取资源对象，以减少对 API Server、对etcd 的请求压力。
