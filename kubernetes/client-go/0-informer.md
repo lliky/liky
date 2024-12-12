@@ -12,7 +12,7 @@ k8s 采用 HTTP API 可以查询集群中所有资源对象并 watch 其变化�
 
 ## 架构图
 
-![client-go](https://github.com/kubernetes/sample-controller/blob/master/docs/images/client-go-controller-interaction.jpeg) 官方架构图
+![client-go](https://github.com/kubernetes/sample-controller/blob/master/docs/images/client-go-controller-interaction.jpeg)   官方架构图
 
 ![](../../image/client-go/client-go.png)
 
@@ -36,3 +36,9 @@ $ curl -iv http://127.0.0.1:8001/api/v1/namespaces/default/pods
 $ curl -iv http://127.0.0.1:8001/api/v1/namespaces/default/pods\?watch\=true
 
 ```
+
+## shareInformer 的作用
+1.  缓存我们关注的资源对象的最新状态数据  
+    创建 Indexer/ClientSet(通过 listerwatcher)/deltaFIFO/Controller(包括 reflector 的创建)
+2.  根据资源对象的变化事件来通知我们注册的事件处理方法     
+    创建 sharedProcessor/注册事件处理方法
