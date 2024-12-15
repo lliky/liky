@@ -258,3 +258,286 @@ dirty 是对未被处理元素进行去重;
 processing 是对正在处理的元素进行去重和重排队;
 
 如果一个元素正在被处理, 再次添加同一个元素, 是放到 dirty 里面, 而不是直接放入 queue, 是因为放入到 queue 中, 并发的场景, 可能导致同一个元素, 同时在处理. 如果是放入到 dirty 里, 在调用 Done 的时候, 说明该元素已经处理完成, 如果还存在 dirty 里, 让该元素重新入队, 然后可以被其他等待的 goroutine 消费, 保证了一个元素不会被同时处理.
+
+## 3. 延迟队列
+
+### 3.1 DelayingInterface
+
+在通用队列的基础上了一个 AddAfter 接口，实现了过一会儿加入 item 的功能，使得在一个 item 处理失败之后，能够在指定延时之后重新入队。
+
+```go
+type DelayingInterface interface {
+	Interface
+	// AddAfter adds an item to the workqueue after the indicated duration has passed
+	AddAfter(item interface{}, duration time.Duration)
+}
+```
+
+### 3.2 delayingType struct
+
+结构体定义，各个字段作用如注释。
+
+```go
+// client-go/util/workqueue/delaying_queue.go
+type delayingType struct {
+	// 通用队列的基本功能
+	Interface
+
+	// 计时器
+	// clock tracks time for delayed firing
+	clock clock.Clock
+
+	// 队列关闭信号
+	// stopCh lets us signal a shutdown to the waiting loop
+	stopCh chan struct{}
+
+	// 保证 shutdown 只执行一次
+	// stopOnce guarantees we only signal shutdown a single time
+	stopOnce sync.Once
+
+	// 心跳 10s
+	// heartbeat ensures we wait no more than maxWait before firing
+	heartbeat clock.Ticker
+
+	// 传递 waitfor 的 channel，默认大小 1000
+	// waitingForAddCh is a buffered channel that feeds waitingForAdd
+	waitingForAddCh chan *waitFor
+
+	// metrics counts the number of retries
+	metrics retryMetrics
+}
+```
+
+### 3.3 waitFor
+
+waitFor 结构定义如下
+```go
+// client-go/util/workqueue/delaying_queue.go
+type waitFor struct {
+	data    t	// 准备添加到队列的元素
+	readyAt time.Time	// 加入到队列的时间
+	index int	// 堆中的索引
+}
+
+```
+waitForPriorityQueue 小顶堆实现了定时器功能，每次弹出最先该加入队列的元素。
+```go
+//client-go/util/workqueue/delaying_queue.go
+type waitForPriorityQueue []*waitFor
+
+func (pq waitForPriorityQueue) Len() int {
+	return len(pq)
+}
+func (pq waitForPriorityQueue) Less(i, j int) bool {
+	return pq[i].readyAt.Before(pq[j].readyAt)
+}
+func (pq waitForPriorityQueue) Swap(i, j int) {
+	pq[i], pq[j] = pq[j], pq[i]
+	pq[i].index = i
+	pq[j].index = j
+}
+
+// Push adds an item to the queue. Push should not be called directly; instead,
+// use `heap.Push`.
+func (pq *waitForPriorityQueue) Push(x interface{}) {
+	n := len(*pq)
+	item := x.(*waitFor)
+	item.index = n
+	*pq = append(*pq, item)
+}
+
+// Pop removes an item from the queue. Pop should not be called directly;
+// instead, use `heap.Pop`.
+func (pq *waitForPriorityQueue) Pop() interface{} {
+	n := len(*pq)
+	item := (*pq)[n-1]
+	item.index = -1
+	*pq = (*pq)[0:(n - 1)]
+	return item
+}
+```
+
+### 3.4 NewDelayingQueue
+
+代码中有两个点需要关注：
+
+*	NewNamed  
+	>	NewNamed 用于创建通用队列的对应类型 Type 对象，然后值赋值给了 delayingType 的 Interface 字段。
+*	go ret.waitingLoop()
+	> 3.5 小节解释
+
+```go
+//client-go/util/workqueue/delaying_queue.go
+func NewDelayingQueue() DelayingInterface {
+	return NewDelayingQueueWithCustomClock(clock.RealClock{}, "")
+}
+
+func NewDelayingQueueWithCustomClock(clock clock.WithTicker, name string) DelayingInterface {
+	return newDelayingQueue(clock, NewNamed(name), name)
+}
+
+func newDelayingQueue(clock clock.WithTicker, q Interface, name string) *delayingType {
+	ret := &delayingType{
+		Interface:       q,
+		clock:           clock,
+		heartbeat:       clock.NewTicker(maxWait),
+		stopCh:          make(chan struct{}),
+		waitingForAddCh: make(chan *waitFor, 1000),
+		metrics:         newRetryMetrics(name),
+	}
+
+	go ret.waitingLoop()
+	return ret
+}
+```
+
+
+### 3.5 waitingLoop
+
+具体的逻辑如下面的注释
+
+```go
+//client-go/util/workqueue/delaying_queue.go
+func (q *delayingType) waitingLoop() {
+	defer utilruntime.HandleCrash()
+
+	// 占位用的，队列中没有数据用的
+	never := make(<-chan time.Time)
+
+	// Make a timer that expires when the item at the head of the waiting queue is ready
+	var nextReadyAtTimer clock.Timer
+
+	// 初始化小顶堆
+	waitingForQueue := &waitForPriorityQueue{}
+	heap.Init(waitingForQueue)
+
+	waitingEntryByData := map[t]*waitFor{}
+
+	for {
+		// 如果 queue 关闭，则退出 loop 
+		if q.Interface.ShuttingDown() {
+			return
+		}
+
+		now := q.clock.Now()
+
+		// Add ready entries
+		for waitingForQueue.Len() > 0 {
+			// 如果堆不为空，则获取堆顶元素
+			entry := waitingForQueue.Peek().(*waitFor)
+			// 如果堆顶元素大于当前时间，说明里面的元素都还没到加入队列的时间，直接跳出
+			if entry.readyAt.After(now) {
+				break
+			}
+			// 如果堆顶元素小于当前时间，则 pop 出堆顶元素，然后加入队列中。
+			entry = heap.Pop(waitingForQueue).(*waitFor)
+			q.Add(entry.data)
+			delete(waitingEntryByData, entry.data)
+		}
+
+		// 如果堆为空，则使用 never 做无限时长定时器
+		nextReadyAt := never
+		// 如果堆不为空，设置最近元素的时间为定时器的时间	
+		if waitingForQueue.Len() > 0 {
+			if nextReadyAtTimer != nil {
+				nextReadyAtTimer.Stop()
+			}
+			// 获取堆顶元素
+			entry := waitingForQueue.Peek().(*waitFor)
+			// 实例化 timer 定时器	
+			nextReadyAtTimer = q.clock.NewTimer(entry.readyAt.Sub(now))
+			nextReadyAt = nextReadyAtTimer.C()
+		}
+
+		// 阻塞这里选择一个
+		select {
+			// 队列关闭，直接跳出 loop
+		case <-q.stopCh:
+			return
+
+			// 心跳， 10s 一次，重新进行选择最近的定时任务
+		case <-q.heartbeat.C():
+			// continue the loop, which will add ready items
+
+			// 上次计算的最近元素定时器已到期，进行下次循环，然后处理该元素
+		case <-nextReadyAt:
+			// continue the loop, which will add ready items
+
+			// 收到新添加的定时器任务
+		case waitEntry := <-q.waitingForAddCh:
+
+			// 如果新对象还没有到期，把定时器任务放入到小顶堆中
+			if waitEntry.readyAt.After(q.clock.Now()) {
+				insert(waitingForQueue, waitingEntryByData, waitEntry)
+			} else {
+				// 如果新对象到期，则直接放入到队列中
+				q.Add(waitEntry.data)
+			}
+
+			// 优化点，通过一个循环，将 waitingForAddCh 中所有的元素都消费掉，根据情况要么插入小顶堆要么放入队列
+			drained := false
+			for !drained {
+				select {
+				case waitEntry := <-q.waitingForAddCh:
+					if waitEntry.readyAt.After(q.clock.Now()) {
+						insert(waitingForQueue, waitingEntryByData, waitEntry)
+					} else {
+						q.Add(waitEntry.data)
+					}
+				default:
+					drained = true
+				}
+			}
+		}
+	}
+}
+
+func insert(q *waitForPriorityQueue, knownEntries map[t]*waitFor, entry *waitFor) {
+	existing, exists := knownEntries[entry.data]
+	// 如果存在，就直接更新 readyAt 时间
+	if exists {
+		if existing.readyAt.After(entry.readyAt) {
+			existing.readyAt = entry.readyAt
+			heap.Fix(q, existing.index)
+		}
+
+		return
+	}
+	// 如果不存在，直接插入到小顶堆中
+	heap.Push(q, entry)
+	knownEntries[entry.data] = entry
+}
+```
+
+### 3.6 AddAfter
+
+和通用队列相比，延迟队列就是多了 AddAfter 方法;  
+该方法作用就是，在指定的延时时间到达之后，将元素加入到队列中
+
+```go
+//client-go/util/workqueue/delaying_queue.go
+func (q *delayingType) AddAfter(item interface{}, duration time.Duration) {
+	// don't add if we're already shutting down
+	// 队列关闭，直接返回
+	if q.ShuttingDown() {
+		return
+	}
+
+	q.metrics.retry()
+
+	// immediately add things with no delay
+	// 如果时间到了，直接入队
+	if duration <= 0 {
+		q.Add(item)
+		return
+	}
+
+	select {
+	case <-q.stopCh:
+		// unblock if ShutDown() is called
+		// 构造 waitFor，直接放入到 channel 中
+	case q.waitingForAddCh <- &waitFor{data: item, readyAt: q.clock.Now().Add(duration)}:
+	}
+}
+
+```
