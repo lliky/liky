@@ -146,4 +146,6 @@ func (limit Limit) tokensFromDuration(d time.Duration) float64 {
 #### Token 归还
 没看明白
 
+>	在 reverveN 中实现的，有 update state
+
 [源码注释](./rate.go)
