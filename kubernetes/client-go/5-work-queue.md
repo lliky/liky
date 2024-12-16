@@ -541,3 +541,338 @@ func (q *delayingType) AddAfter(item interface{}, duration time.Duration) {
 }
 
 ```
+
+## 4. 限速队列
+
+限速队列是在延迟队列的基础上实现的。
+
+元素是通过 AddRateLimited 加入队列的，加入的时候需要先经过 rateLimiter 计算是否触发限速。如果需要则计算该元素的 delay 时长，把该对象放到延迟队列中。
+
+### 4.1 RateLimitingInterface 
+
+```go
+// client-go/util/workqueue/rate_limiting_queue.go
+type RateLimitingInterface interface {
+	DelayingInterface
+
+	// AddRateLimited adds an item to the workqueue after the rate limiter says it's ok
+	AddRateLimited(item interface{})
+
+	// Forget indicates that an item is finished being retried.  Doesn't matter whether it's for perm failing
+	// or for success, we'll stop the rate limiter from tracking it.  This only clears the `rateLimiter`, you
+	// still have to call `Done` on the queue.
+	Forget(item interface{})
+
+	// NumRequeues returns back how many times the item was requeued
+	NumRequeues(item interface{}) int
+}
+```
+
+### 4.2 rateLimitingType struct
+
+```go
+// client-go/util/workqueue/rate_limiting_queue.go
+type rateLimitingType struct {
+	// 延迟队列功能
+	DelayingInterface
+	// 限速组件
+	rateLimiter RateLimiter
+}
+```
+
+### 4.3 rateLimitingType 的实现
+
+在初始化 rateLimitingType，创建了 DelayingInterface 和 RateLimiter
+
+AddRateLimited 方法是通过限速计算出需要等待的时长，然后调用 DelayingInterface.AddAfter 方法决定把对象扔到延迟队列里还是队列里
+NumRequeues 方法和 Forget 方法要根据不同的限速器具体分析
+
+```go
+// client-go/util/workqueue/rate_limiting_queue.go
+func NewRateLimitingQueue(rateLimiter RateLimiter) RateLimitingInterface {
+	return &rateLimitingType{
+		DelayingInterface: NewDelayingQueue(),
+		rateLimiter:       rateLimiter,
+	}
+}
+
+func (q *rateLimitingType) AddRateLimited(item interface{}) {
+	q.DelayingInterface.AddAfter(item, q.rateLimiter.When(item))
+}
+
+func (q *rateLimitingType) NumRequeues(item interface{}) int {
+	return q.rateLimiter.NumRequeues(item)
+}
+
+func (q *rateLimitingType) Forget(item interface{}) {
+	q.rateLimiter.Forget(item)
+}
+
+```
+
+### 4.3 RateLimiter
+
+RateLimiter 也是一个接口, 在 workqueue 内置了几个 RateLimiter 限速器的实现。也可以自己去实现限速器
+
+*	BucketRateLimiter
+*	ItemExponentialFailureRateLimiter
+*	ItemFastSlowRateLimiter
+*	WithMaxWaitRateLimiter
+*	MaxOfRateLimiter
+
+```go
+// client-go/util/workqueue/default_rate_limiters.go
+type RateLimiter interface {
+	// 获取元素入队时间
+	When(item interface{}) time.Duration
+	// 删除该元素的记录
+	Forget(item interface{})
+	// 记录该对象次数
+	NumRequeues(item interface{}) int
+}
+```
+
+#### 4.3.1 BucketRateLimiter 限速器
+
+令牌桶限速器 when 方法直接返回了该元素入队时间
+
+令牌桶原理可参考：[令牌桶解析](./../../golang/rate-limiter/limiter.md)
+
+```go
+// client-go/util/workqueue/default_rate_limiters.go
+type BucketRateLimiter struct {
+	*rate.Limiter
+}
+
+func (r *BucketRateLimiter) When(item interface{}) time.Duration {
+	return r.Limiter.Reserve().Delay()
+}
+
+func (r *BucketRateLimiter) NumRequeues(item interface{}) int {
+	return 0
+}
+
+func (r *BucketRateLimiter) Forget(item interface{}) {
+}
+```
+
+#### 4.3.2 ItemExponentialFailureRateLimiter
+
+该限速器使用了一个 map 记录了元素的次数，后通过 backoff 算法可以求出当前需要等待的时长，只要 Forget 不擦除，下次就是上次的 2 倍，有一个最大时间。
+
+看默认的函数：DefaultItemBasedRateLimiter
+
+*	baseDelay: 1 ms
+*	maxDelay: 1000s
+
+延时时间就是： 1ms，2ms，4ms，8ms，16ms ... 上限时 1000s
+```go
+// client-go/util/workqueue/default_rate_limiters.go
+type ItemExponentialFailureRateLimiter struct {
+	failuresLock sync.Mutex
+	failures     map[interface{}]int
+
+	baseDelay time.Duration
+	maxDelay  time.Duration
+}
+
+func NewItemExponentialFailureRateLimiter(baseDelay time.Duration, maxDelay time.Duration) RateLimiter {
+	return &ItemExponentialFailureRateLimiter{
+		failures:  map[interface{}]int{},
+		baseDelay: baseDelay,
+		maxDelay:  maxDelay,
+	}
+}
+
+func DefaultItemBasedRateLimiter() RateLimiter {
+	return NewItemExponentialFailureRateLimiter(time.Millisecond, 1000*time.Second)
+}
+
+func (r *ItemExponentialFailureRateLimiter) When(item interface{}) time.Duration {
+	r.failuresLock.Lock()
+	defer r.failuresLock.Unlock()
+
+	// 获取上次计数，然后把失败次数加一
+	exp := r.failures[item]
+	r.failures[item] = r.failures[item] + 1
+
+	// 计算 backoff 时长，是上次的两倍
+	backoff := float64(r.baseDelay.Nanoseconds()) * math.Pow(2, float64(exp))
+	if backoff > math.MaxInt64 {
+		// 不能超过 最大延迟时间
+		return r.maxDelay
+	}
+
+	calculated := time.Duration(backoff)
+	if calculated > r.maxDelay {
+		return r.maxDelay
+	}
+
+	return calculated
+}
+
+func (r *ItemExponentialFailureRateLimiter) NumRequeues(item interface{}) int {
+	r.failuresLock.Lock()
+	defer r.failuresLock.Unlock()
+
+	return r.failures[item]
+}
+
+// 不记录该对象的次数，那么下次等待时间就从 baseDelay 算起
+func (r *ItemExponentialFailureRateLimiter) Forget(item interface{}) {
+	r.failuresLock.Lock()
+	defer r.failuresLock.Unlock()
+
+	delete(r.failures, item)
+}
+
+```
+
+#### 4.3.3 ItemFastSlowRateLimiter
+
+该限速器使用了一个 map 记录了元素的次数，然后配置两个快慢时间，以及一个快时间的最大尝试次数。
+
+```go
+// client-go/util/workqueue/default_rate_limiters.go
+type ItemFastSlowRateLimiter struct {
+	failuresLock sync.Mutex
+	// 记录次数
+	failures     map[interface{}]int
+
+	// 快记录最大尝试次数
+	maxFastAttempts int
+	// 快延迟
+	fastDelay       time.Duration
+	// 慢延迟
+	slowDelay       time.Duration
+}
+
+var _ RateLimiter = &ItemFastSlowRateLimiter{}
+
+func NewItemFastSlowRateLimiter(fastDelay, slowDelay time.Duration, maxFastAttempts int) RateLimiter {
+	return &ItemFastSlowRateLimiter{
+		failures:        map[interface{}]int{},
+		fastDelay:       fastDelay,
+		slowDelay:       slowDelay,
+		maxFastAttempts: maxFastAttempts,
+	}
+}
+
+func (r *ItemFastSlowRateLimiter) When(item interface{}) time.Duration {
+	r.failuresLock.Lock()
+	defer r.failuresLock.Unlock()
+
+	r.failures[item] = r.failures[item] + 1
+
+	if r.failures[item] <= r.maxFastAttempts {
+		return r.fastDelay
+	}
+
+	return r.slowDelay
+}
+
+func (r *ItemFastSlowRateLimiter) NumRequeues(item interface{}) int {
+	r.failuresLock.Lock()
+	defer r.failuresLock.Unlock()
+
+	return r.failures[item]
+}
+
+func (r *ItemFastSlowRateLimiter) Forget(item interface{}) {
+	r.failuresLock.Lock()
+	defer r.failuresLock.Unlock()
+
+	delete(r.failures, item)
+}
+```
+
+#### 4.3.4 WithMaxWaitRateLimiter
+
+和其他限速器一起使用，配置了需要等待最长时间值，如果从其他限速器获取的等待时间值大于配置的值，就使用配置的，否则就用限速器获取的值。
+
+```go
+// client-go/util/workqueue/default_rate_limiters.go
+type WithMaxWaitRateLimiter struct {
+	limiter  RateLimiter
+	maxDelay time.Duration
+}
+
+func NewWithMaxWaitRateLimiter(limiter RateLimiter, maxDelay time.Duration) RateLimiter {
+	return &WithMaxWaitRateLimiter{limiter: limiter, maxDelay: maxDelay}
+}
+
+func (w WithMaxWaitRateLimiter) When(item interface{}) time.Duration {
+	delay := w.limiter.When(item)
+	if delay > w.maxDelay {
+		return w.maxDelay
+	}
+
+	return delay
+}
+
+func (w WithMaxWaitRateLimiter) Forget(item interface{}) {
+	w.limiter.Forget(item)
+}
+
+func (w WithMaxWaitRateLimiter) NumRequeues(item interface{}) int {
+	return w.limiter.NumRequeues(item)
+}
+```
+
+#### 4.3.5 MaxOfRateLimiter
+
+可以传入多个 RateLimiter 限速器实例, 使用 When() 求等待间隔时间, 遍历计算所有的 RateLimiter 实例, 求最大的时长. Forget 同理, 也是对所有的 RateLimiter 集合遍历调用.
+
+```go
+// client-go/util/workqueue/default_rate_limiters.go
+type MaxOfRateLimiter struct {
+	limiters []RateLimiter
+}
+
+func (r *MaxOfRateLimiter) When(item interface{}) time.Duration {
+	ret := time.Duration(0)
+	for _, limiter := range r.limiters {
+		curr := limiter.When(item)
+		if curr > ret {
+			ret = curr
+		}
+	}
+	return ret
+}
+
+func NewMaxOfRateLimiter(limiters ...RateLimiter) RateLimiter {
+	return &MaxOfRateLimiter{limiters: limiters}
+}
+
+func (r *MaxOfRateLimiter) NumRequeues(item interface{}) int {
+	ret := 0
+	for _, limiter := range r.limiters {
+		curr := limiter.NumRequeues(item)
+		if curr > ret {
+			ret = curr
+		}
+	}
+
+	return ret
+}
+
+func (r *MaxOfRateLimiter) Forget(item interface{}) {
+	for _, limiter := range r.limiters {
+		limiter.Forget(item)
+	}
+}
+```
+
+## 5. 总结
+
+Interface 是通用队列；
+DelayingInterface 是在 Interface 基础上实现的延迟队列；
+RateLimitingInterface 是在 DelayingInterface 基础上实现的限速队列；
+
+限速队列中的限速器我们可以使用它们提供的，也可以使用我们自定义的
+
+在我们自定义代码中，我们可以直接实例化一个限速队列
+
+然后在 ResourceEventHandlerFuncs 中把元素加入队列，我们控制器编写代码
+
+queue.Get() -> queue.Done -> queue.Forget() -> queue.AddRateLimited()
