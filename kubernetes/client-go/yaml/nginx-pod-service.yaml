@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
       - name: nginx
-        image: docker.io/library/nginx:1.18.0
+        image: docker.io/library/nginx:alpine
         imagePullPolicy: Never
         ports:
         - containerPort: 80

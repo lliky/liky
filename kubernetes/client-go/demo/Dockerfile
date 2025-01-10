@@ -1,4 +1,4 @@
-FROM golang:1.22 as builder
+FROM golang:1.22.10 as builder
 
 WORKDIR /app
 
@@ -8,7 +8,7 @@ COPY . .
 
 RUN CGO_ENABLED=0 go build -o ingress-manager main.go
 
-FROM alpine:3.17.9
+FROM busybox:1.37.0
 
 WORKDIR /app
 

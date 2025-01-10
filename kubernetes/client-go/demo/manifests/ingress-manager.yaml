@@ -17,8 +17,9 @@ spec:
       labels:
         app: ingress-manager
     spec:
+      serviceAccountName: ingress-manager-sa
       containers:
-      - image: docker.io/library/ingress-manager:1.0.0
+      - image: docker.io/demo/ingress-manager:1.0.0
         name: ingress-manager
         imagePullPolicy: Never
         resources: {}
