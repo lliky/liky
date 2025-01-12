@@ -1,0 +1,8 @@
+apiVersion: stable.example.com/v1
+kind: CronTab
+metadata:
+  name: demo
+  finalizers:
+  - aaaa
+spec:
+  name: test
